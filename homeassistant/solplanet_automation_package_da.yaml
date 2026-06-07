@@ -1,0 +1,638 @@
+# ==============================================================================
+# SOLPLANET AUTOMATION - KOMPLET HOME ASSISTANT PAKKE (DANSK)
+# ==============================================================================
+# VIGTIGT KRAV TIL INTEGRATION:
+# Denne pakke kræver den uofficielle "Solplanet / VoltX Inverter Integration"
+# installeret via HACS (udviklet af 'calvinbui'). Den understøtter specifikt
+# V2-enheder og skema-tjenesterne ('solplanet.set_schedule_slots' osv.).
+# Link: https://github.com/calvinbui/home-assistant-solplanet
+#
+# INSTALLATIONS-GUIDE:
+# Før dette virker, SKAL du bruge 'Søg og Erstat' (Ctrl + F) i denne fil og
+# udskifte følgende pladsholdere med dine egne entiteter fra Home Assistant:
+#
+# 1. DIN_INVERTER_IP_HER (Eks: 192.168.1.50)
+# 2. DIN_BATTERI_SOC_SENSOR (Eks: sensor.solplanet_battery_state_of_charge)
+# 3. DIN_SOLCELLE_WATT_SENSOR (Eks: sensor.solplanet_pv_power)
+# 4. DIT_HUS_FORBRUG_WATT_SENSOR (Eks: sensor.p1_meter_effekt)
+# 5. DIN_BATTERI_WATT_SENSOR (Eks: sensor.solplanet_battery_power)
+# 6. DIN_INVERTER_WORK_MODE_ENTITET (Eks: select.solplanet_work_mode)
+# 7. DIN_INVERTER_INPUT_POWER_ENTITET (Eks: number.solplanet_schedule_input_power)
+# 8. DIN_INVERTER_OUTPUT_POWER_ENTITET (Eks: number.solplanet_schedule_output_power)
+# 9. DIT_DEVICE_ID_HER (Findes nemmest via: Udviklerværktøjer -> Handlinger ->
+#    Vælg 'solplanet.clear_schedule' -> Vælg din Inverter -> Skift til YAML-tilstand)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. UI HJÆLPERE (KONTROLPULTEN)
+# ------------------------------------------------------------------------------
+input_select:
+  solcelle_profil:
+    name: "Aktiv Solcelle Profil"
+    options:
+      - "Profit Mode"
+      - "Smart Selvforsyning"
+      - "Backup Mode"
+    icon: mdi:state-machine
+  batterisalg_tilstand:
+    name: "Batterisalg Tilstand"
+    options:
+      - "Slukket"
+      - "Manuel (Tidsstyret)"
+      - "Auto (AI Styret)"
+    icon: mdi:cash-fast
+
+  elbil_skjold_mode:
+    name: "Elbil Skjold (Beskyttelse af batteri)"
+    options:
+      - "Deaktiveret"
+      - "Simpel (Total Forbrugsgrænse)"
+      - "Avanceret (Målt på lader)"
+    icon: mdi:shield-car
+
+input_datetime:
+  batterisalg_start_tid:
+    name: "Manuel Starttid for Batterisalg"
+    has_date: false
+    has_time: true
+    icon: mdi:clock-start
+
+input_boolean:
+  solcelle_ai_styring_aktiv:
+    name: "AI Solcelle-Styring Aktiv"
+    icon: mdi:robot
+  system_test_mode:
+    name: "System Test Mode (Dummy Data)"
+    icon: mdi:test-tube
+  override_eksport_stop:
+    name: "Tilsidesæt Eksport Stop"
+    icon: mdi:solar-power-variant-outline
+  override_charge_zero:
+    name: "Tving opladning til 0W (Test)"
+    icon: mdi:battery-off-outline
+  ai_debug_mode:
+    name: "Debugging af AI planlægger"
+    icon: mdi:test-tube
+  batterisalg_igang_nu:
+    name: "Status: Batterisalg er igang"
+    icon: mdi:battery-arrow-down
+  solcelle_eksport_stop_status:
+    name: "Status: Eksport Stop Aktiv"
+    icon: mdi:stop-circle-outline
+  trigger_ai_beregning:
+    name: "Tving AI Beregning NU"
+    icon: mdi:calculator
+  override_forbud_soleksport:
+    name: "Forbyd Soleksport"
+    icon: mdi:transmission-tower-off
+  vis_menu_elbil:
+    name: "Vis Menu Elbil"
+
+input_number:
+  override_batteri_timer:
+    name: "Batterisalg Varighed (Timer)"
+    min: 0
+    max: 12
+    step: 1
+    mode: slider
+  batteri_min_soc:
+    name: "Batteri Min. Reserve (SOC)"
+    min: 10
+    max: 100
+    step: 1
+    mode: slider
+    unit_of_measurement: "%"
+  min_eksport_pris:
+    name: "Min. Eksport Pris"
+    min: -5.0
+    max: 5.0
+    step: 0.01
+    mode: box
+    unit_of_measurement: "kr/kWh"
+  sol_faktor_threshold:
+    name: "Sol-Faktor Grænse (Salg)"
+    min: 100
+    max: 500
+    step: 10
+    mode: box
+  batterisalg_kwh:
+    name: "Batterisalg: Mængde (kWh)"
+    min: 1
+    max: 20
+    step: 1
+    mode: slider
+    unit_of_measurement: "kWh"
+    icon: mdi:battery-minus
+
+  batteri_salgs_buffer:
+    name: "Batteri Salgs Buffer (%)"
+    min: 0.0
+    max: 20.0
+    step: 0.5
+    initial: 5.0
+    unit_of_measurement: "%"
+    icon: mdi:battery-percent
+  batterisalg_target_soc:
+    name: "Batterisalg: Mål SOC (Skjult)"
+    min: 0
+    max: 100
+    step: 1
+  roed_profit_margin:
+    name: "Min. Profit Margin (Rød Profil)"
+    min: 0.1
+    max: 3.0
+    step: 0.1
+    mode: slider
+    unit_of_measurement: "kr/kWh"
+    icon: mdi:cash-multiple
+
+  groen_min_salgspris:
+    name: "Min. Salgspris (Grøn Profil)"
+    min: 0.1
+    max: 5.0
+    step: 0.1
+    mode: slider
+    unit_of_measurement: "kr/kWh"
+    icon: mdi:cash-check
+  sol_throttle_safety_price:
+    name: "Sikkerhedspris (Throttling)"
+    min: 0.0
+    max: 5.0
+    step: 0.01
+    mode: box
+    unit_of_measurement: "kr/kWh"
+  sol_throttle_aggressivitet:
+    name: "Sol-Throttling Aggressivitet"
+    min: 0.0
+    max: 10.0
+    step: 1
+    icon: mdi:speedometer
+  sol_throttle_pris_dyk:
+    name: "Min. Prisfald for Sol-Throttle"
+    min: 0.0
+    max: 1.5
+    step: 0.05
+    initial: 0.30
+    unit_of_measurement: "kr"
+    icon: mdi:trending-down
+  sol_laas_min_soc:
+    name: "Sol-lås Minimum SOC"
+    icon: mdi:lock
+    initial: 40
+    min: 20
+    max: 80
+    step: 5
+    unit_of_measurement: "%"
+    mode: slider
+
+  elbil_skjold_simpel_graense:
+    name: "Forbrugsgrænse for Simpel Mode"
+    min: 2000
+    max: 20000
+    step: 500
+    unit_of_measurement: "W"
+    icon: mdi:flash-alert
+  tvangsladning_ved_negativ_pris:
+    name: "Tvangsladning: Start (Købspris under)"
+    min: -2.0
+    max: 0.0
+    step: 0.05
+    mode: slider
+    unit_of_measurement: "kr/kWh"
+    icon: mdi:flash-alert
+
+input_text:
+  aktivt_inverter_skema:
+    name: "Aktivt Inverter Skema (Hukommelse)"
+    initial: "none"
+    icon: mdi:memory
+
+# ------------------------------------------------------------------------------
+# 2. REST KOMMANDOER (Inverter Styring)
+# ------------------------------------------------------------------------------
+rest_command:
+  solplanet_stop_eksport:
+    url: "http://192.168.1.109:8484/setting.cgi"
+    method: POST
+    headers:
+      content_type: 'application/json'
+    payload: '{"device":3,"action":"setmeter","value":{"target":0,"regulate":10,"enb_PF":5,"target_PF":0,"abs":0,"offset":2}}'
+  solplanet_tillad_eksport:
+    url: "http://192.168.1.109:8484/setting.cgi"
+    method: POST
+    headers:
+      content_type: 'application/json'
+    payload: '{"device":3,"action":"setmeter","value":{"target":12000,"regulate":10,"enb_PF":5,"target_PF":0,"abs":0,"offset":2}}'
+
+# ------------------------------------------------------------------------------
+# 3. AUTOMATIONER
+# ------------------------------------------------------------------------------
+automation:
+  - alias: "SA AI: Opdater plan ved Debug-skift"
+    id: sa_ai_opdater_plan_ved_debug_skift
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: input_boolean.ai_debug_mode
+    action:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.trigger_ai_beregning
+
+  - alias: "SA Batterisalg: Start Manuel Udsalg"
+    id: sa_batterisalg_start_manuel
+    mode: single
+    trigger:
+      - platform: time
+        at: input_datetime.batterisalg_start_tid
+    condition:
+      - condition: state
+        entity_id: input_select.batterisalg_tilstand
+        state: "Manuel (Tidsstyret)"
+      - condition: template
+        value_template: >
+          {{ states('sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge') | float(0) > states('input_number.batteri_min_soc') | float(10) }}
+    action:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.batterisalg_target_soc
+        data:
+          value: >
+            {% set nu_soc = states('sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge') | float(0) %}
+            {% set kwh = states('input_number.batterisalg_kwh') | float(0) %}
+            {% set min_soc = states('input_number.batteri_min_soc') | float(10) %}
+            {{ [nu_soc - (kwh * 5), min_soc] | max | int }}
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.batterisalg_igang_nu
+      - action: script.solcelle_beregn_kommende_time
+
+  - alias: "SA Batterisalg: Stop Udsalg"
+    id: sa_batterisalg_stop_naaet
+    mode: single
+    trigger:
+      - platform: template
+        value_template: >
+          {{ states('sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge') | float(100) <= states('input_number.batterisalg_target_soc') | float(0) }}
+        id: "succes"
+      - platform: state
+        entity_id: input_select.batterisalg_tilstand
+        to: "Slukket"
+        id: "afbrudt"
+      - platform: state
+        entity_id: input_boolean.batterisalg_igang_nu
+        to: "off"
+        id: "afbrudt"
+    action:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.batterisalg_igang_nu
+      - action: script.solcelle_nulstil_til_normal_drift
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.batterisalg_tilstand
+        data:
+          option: "Auto (AI Styret)"
+      - action: script.solcelle_beregn_kommende_time
+
+  - alias: "SA AI: Master Beregnings-loop"
+    id: sa_solcelle_master_beregnings_loop
+    mode: queued
+    max: 5
+    trigger:
+      - platform: state
+        entity_id: sensor.solplanet_automation_plan
+      - platform: state
+        entity_id: input_boolean.override_forbud_soleksport
+      - platform: state
+        entity_id: input_boolean.trigger_ai_beregning
+        to: "on"
+      - platform: state
+        entity_id: input_boolean.override_eksport_stop
+    action:
+      - action: script.solcelle_beregn_kommende_time
+        data: {}
+
+  - alias: "SA Throttle: Dynamisk Opladning (Anti-Grid)"
+    id: sa_ai_throttle_dynamisk_opladning
+    mode: restart
+    trigger:
+      - platform: time_pattern
+        minutes: "/1"
+    condition:
+      - condition: state
+        entity_id: input_boolean.solcelle_ai_styring_aktiv
+        state: "on"
+      - condition: state
+        entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+        state: "Custom mode"
+      - condition: template
+        value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 3 }}"
+    action:
+      - variables:
+          pv: "{{ states('sensor.solplanet_battery_oe012k60z2550185_pv_power') | float(0) }}"
+          p1_grid: "{{ states('sensor.p1_meter_effekt') | float(0) }}"
+          nuvaerende_ladehastighed: "{{ states('number.solplanet_battery_oe012k60z2550185_schedule_input_power') | float(0) }}"
+          teoretisk_overskud: "{{ nuvaerende_ladehastighed - p1_grid }}"
+          rent_overskud: "{{ [teoretisk_overskud, 0] | max }}"
+          ai_max_lade_limit: "{{ state_attr('sensor.solplanet_automation_plan', 'target_battery_input_power') | int(10000) }}"
+          tilladt_opladning: "{{ [rent_overskud, ai_max_lade_limit] | min | int }}"
+      - action: number.set_value
+        target:
+          entity_id: number.solplanet_battery_oe012k60z2550185_schedule_input_power
+        data:
+          value: "{{ tilladt_opladning }}"
+
+  - alias: "SA Throttle: Mode Manager"
+    id: sa_ai_throttle_mode_manager
+    mode: single
+    trigger:
+      - platform: template
+        value_template: >
+          {{ states('sensor.p1_meter_effekt') | float(0) > 500 and
+             is_state('select.solplanet_battery_oe012k60z2550185_work_mode', 'Custom mode') }}
+        for: "00:01:00"
+        id: "til_normal"
+      - platform: template
+        value_template: >
+          {% set pv = states('sensor.solplanet_battery_oe012k60z2550185_pv_power') | float(0) %}
+          {% set grid = states('sensor.p1_meter_effekt') | float(0) %}
+          {% set batt = states('sensor.solplanet_battery_oe012k60z2550185_battery_power') | float(0) %}
+          {% set hus = pv + grid + batt %}
+          {% set overskud = pv - hus %}
+          {{ overskud > 50 and grid < 100 and
+             is_state('select.solplanet_battery_oe012k60z2550185_work_mode', 'Self-consumption mode') }}
+        for: "00:01:00"
+        id: "til_custom"
+    condition:
+      - condition: state
+        entity_id: input_boolean.solcelle_ai_styring_aktiv
+        state: "on"
+      - condition: template
+        value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 3 }}"
+    action:
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: "til_normal"
+            sequence:
+              - action: select.select_option
+                target:
+                  entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+                data:
+                  option: "Self-consumption mode"
+          - conditions:
+              - condition: trigger
+                id: "til_custom"
+            sequence:
+              - action: select.select_option
+                target:
+                  entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+                data:
+                  option: "Custom mode"
+
+# ------------------------------------------------------------------------------
+# 4. SCRIPTS
+# ------------------------------------------------------------------------------
+script:
+  solcelle_beregn_kommende_time:
+    alias: "SA: Udfør AI Strategi"
+    sequence:
+      - condition: state
+        entity_id: input_boolean.solcelle_ai_styring_aktiv
+        state: "on"
+      - action: script.solcelle_indstil_batteri_ladehastighed
+        data:
+          watt: "{{ state_attr('sensor.solplanet_automation_plan', 'target_battery_input_power') | int(10000) }}"
+      - action: script.solcelle_indstil_batteri_afladehastighed
+        data:
+          watt: "{{ state_attr('sensor.solplanet_automation_plan', 'target_battery_output_power') | int(10000) }}"
+      - choose:
+          - conditions:
+              - condition: or
+                conditions:
+                  - condition: state
+                    entity_id: input_boolean.batterisalg_igang_nu
+                    state: "on"
+                  - condition: template
+                    value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 11 }}"
+                  - condition: and
+                    conditions:
+                      - condition: state
+                        entity_id: input_select.batterisalg_tilstand
+                        state: "Auto (AI Styret)"
+                      - condition: template
+                        value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 4 }}"
+            sequence:
+              - action: script.solcelle_haandter_eksport
+                data:
+                  handling: "tillad"
+              - action: script.solcelle_indstil_batteri_afladehastighed
+                data:
+                  watt: 10000
+              - action: script.solcelle_saet_skema_med_tjek
+                data:
+                  skema_mode: "discharge"
+          - conditions:
+              - condition: template
+                value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 3 }}"
+            sequence:
+              - action: script.solcelle_saet_skema_med_tjek
+                data:
+                  skema_mode: "charge"
+          - conditions:
+              - condition: template
+                value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') | int(0) in [5, 8, 10] }}"
+            sequence:
+              - variables:
+                  batteri_str_kwh: "{{ states('input_number.batteri_kapacitet_kwh') | float(20.0) }}"
+                  soc_sensor: "sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge"
+                  onsket_kwh: "{{ state_attr('sensor.solplanet_automation_plan', 'target_battery_input_power') | float(0) / 1000 }}"
+                  start_soc: "{{ states(soc_sensor) | float(0) }}"
+                  target_soc: "{{ start_soc + (onsket_kwh / batteri_str_kwh * 100) }}"
+              - action: select.select_option
+                target:
+                  entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+                data:
+                  option: "Time of use mode"
+              - wait_template: "{{ states(soc_sensor) | float(0) >= target_soc }}"
+                timeout: "00:55:00"
+                continue_on_timeout: true
+              - action: script.solcelle_nulstil_til_normal_drift
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.override_eksport_stop
+                state: "off"
+              - condition: template
+                value_template: >
+                  {{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 2 or
+                     is_state('input_boolean.override_forbud_soleksport', 'on') }}
+            sequence:
+              - action: script.solcelle_haandter_eksport
+                data:
+                  handling: "stop"
+              - choose:
+                  - conditions:
+                      - condition: template
+                        value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'target_work_mode') == 'Custom' }}"
+                    sequence:
+                      - action: script.solcelle_saet_skema_med_tjek
+                        data:
+                          skema_mode: "charge"
+                default:
+                  - action: script.solcelle_nulstil_til_normal_drift
+          - conditions:
+              - condition: template
+                value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 6 }}"
+            sequence:
+              - action: script.solcelle_saet_skema_med_tjek
+                data:
+                  skema_mode: "charge"
+          - conditions:
+              - condition: template
+                value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 7 }}"
+            sequence:
+              - action: script.solcelle_saet_skema_med_tjek
+                data:
+                  skema_mode: "charge"
+          # --- TILFØJ DENNE NYE BLOK TIL ELBIL SKJOLD (ID 9) ---
+          - conditions:
+              - condition: template
+                value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 9 }}"
+            sequence:
+              - action: script.solcelle_saet_skema_med_tjek
+                data:
+                  skema_mode: "discharge"
+          # ---------------------------------------------------
+        default:
+          - action: script.solcelle_haandter_eksport
+            data:
+              handling: "tillad"
+          - action: script.solcelle_nulstil_til_normal_drift
+
+  solcelle_indstil_batteri_ladehastighed:
+    alias: "SA: Indstil Ladehastighed"
+    fields:
+      watt:
+        description: "Max lade-effekt (W)"
+    sequence:
+      - condition: template
+        value_template: "{{ states('number.solplanet_battery_oe012k60z2550185_schedule_input_power') | int(-1) != watt | int }}"
+      - action: number.set_value
+        target:
+          entity_id: number.solplanet_battery_oe012k60z2550185_schedule_input_power
+        data:
+          value: "{{ watt | int }}"
+
+  solcelle_indstil_batteri_afladehastighed:
+    alias: "SA: Indstil Afladehastighed"
+    fields:
+      watt:
+        description: "Max aflade-effekt (W)"
+    sequence:
+      - condition: template
+        value_template: "{{ states('number.solplanet_battery_oe012k60z2550185_schedule_output_power') | int(-1) != watt | int }}"
+      - action: number.set_value
+        target:
+          entity_id: number.solplanet_battery_oe012k60z2550185_schedule_output_power
+        data:
+          value: "{{ watt | int }}"
+
+  solcelle_haandter_eksport:
+    alias: "SA: Håndter Eksport"
+    fields:
+      handling:
+        description: "stop eller tillad"
+    sequence:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ handling == 'stop' and is_state('input_boolean.solcelle_eksport_stop_status', 'off') }}"
+            sequence:
+              - action: rest_command.solplanet_stop_eksport
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.solcelle_eksport_stop_status
+          - conditions:
+              - condition: template
+                value_template: "{{ handling == 'tillad' and is_state('input_boolean.solcelle_eksport_stop_status', 'on') }}"
+            sequence:
+              - action: rest_command.solplanet_tillad_eksport
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.solcelle_eksport_stop_status
+
+  solcelle_nulstil_til_normal_drift:
+    alias: "SA: Nulstil til Normal Drift"
+    sequence:
+      - condition: template
+        value_template: >
+          {{ states('input_text.aktivt_inverter_skema') != 'none' or
+             states('select.solplanet_battery_oe012k60z2550185_work_mode') != 'Self-consumption mode' }}
+      - action: select.select_option
+        target:
+          entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+        data:
+          option: "Self-consumption mode"
+      - action: solplanet.clear_schedule
+        continue_on_error: true
+        target:
+          device_id: "0639d533a0373a502e902e89058940b3"
+        data:
+          day: "all"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.aktivt_inverter_skema
+        data:
+          value: "none"
+
+  solcelle_saet_skema_med_tjek:
+    alias: "SA: Sæt Inverter Skema"
+    fields:
+      skema_mode:
+        example: "charge"
+    sequence:
+      - action: select.select_option
+        target:
+          entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+        data:
+          option: "Custom mode"
+      - delay: "00:00:05"
+      - condition: template
+        value_template: >
+          {{ states('input_text.aktivt_inverter_skema') != skema_mode or
+             (now().timestamp() - as_timestamp(states.input_text.aktivt_inverter_skema.last_changed, 0)) > 10800 }}
+      - variables:
+          v_mode: "{{ skema_mode | lower }}"
+          dag_navn: "{{ ['Mon', 'Tus', 'Wen', 'Thu', 'Fri', 'Sat', 'Sun'][now().weekday()] }}"
+          kalkuleret_duration: "{{ [4, 24 - now().hour] | min }}"
+      - action: solplanet.clear_schedule
+        continue_on_error: true
+        target:
+          device_id: "0639d533a0373a502e902e89058940b3"
+        data:
+          day: "{{ dag_navn }}"
+      - delay: "00:00:10"
+      - action: solplanet.clear_schedule
+        continue_on_error: true
+        target:
+          device_id: "0639d533a0373a502e902e89058940b3"
+        data:
+          day: "{{ dag_navn }}"
+      - delay: "00:00:15"
+      - action: solplanet.set_schedule_slots
+        continue_on_error: true
+        target:
+          device_id: "0639d533a0373a502e902e89058940b3"
+        data:
+          day: "{{ dag_navn }}"
+          start_hour: "{{ now().hour | int }}"
+          start_minute: 0
+          duration: "{{ kalkuleret_duration | int }}"
+          mode: "{{ v_mode }}"
+      - delay: "00:00:10"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.aktivt_inverter_skema
+        data:
+          value: "{{ v_mode }}"

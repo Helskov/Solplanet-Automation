@@ -1,0 +1,331 @@
+# ==============================================================================
+# SOLPLANET AUTOMATION - LOVELACE DASHBOARD (DANSK)
+# ==============================================================================
+# INSTALLATIONS-GUIDE:
+# Opret et 'Manuelt kort' (Manual Card) i dit Lovelace-dashboard og indsæt denne
+# kode. Før det virker, SKAL du bruge 'Søg og Erstat' (Ctrl + F) og udskifte
+# følgende pladsholdere med dine egne rigtige sensor-navne:
+#
+# 1. DIN_SALGSPRIS_SENSOR             (Eks: sensor.stromligning_spotprice_ex_vat)
+# 2. DIN_KOEBSPRIS_SENSOR             (Eks: sensor.stromligning_current_price_vat)
+# 3. DIN_SOLCELLE_WATT_SENSOR         (Eks: sensor.solplanet_pv_power)
+# 4. DIN_BATTERI_WATT_SENSOR          (Eks: sensor.solplanet_battery_power)
+# 5. DIN_BATTERI_SOC_SENSOR           (Eks: sensor.solplanet_battery_state_of_charge)
+# 6. DIN_NET_WATT_SENSOR              (Eks: sensor.p1_meter_effekt)
+# 7. DIN_INVERTER_WORK_MODE_ENTITET   (Eks: select.solplanet_work_mode)
+# 8. DIN_INVERTER_INPUT_POWER_ENTITET (Eks: number.solplanet_schedule_input_power)
+# 9. DIN_INVERTER_OUTPUT_POWER_ENTITET(Eks: number.solplanet_schedule_output_power)
+# ==============================================================================
+
+type: conditional
+conditions:
+  - condition: state
+    entity: input_select.solceller_fane
+    state: Live
+card:
+  type: vertical-stack
+  cards:
+    - type: conditional
+      conditions:
+        - condition: state
+          state: "on"
+      card:
+        type: markdown
+        content: >
+          ## <ha-icon icon="mdi:shield-car" style="color: #e74c3c;"></ha-icon>
+          Elbil Skjold er AKTIVT!  **Hus-batteriet er låst** i Custom Mode for
+          at beskytte mod net-træk. AI-styringen er på pause.
+    - type: conditional
+      conditions:
+        - condition: state
+          entity: input_boolean.batterisalg_igang_nu
+          state: "on"
+      card:
+        type: markdown
+        content: >
+          ## <ha-icon icon="mdi:cash-fast" style="color: #2ecc71;"></ha-icon>
+          Strømsalg er I GANG!  Systemet sælger lige nu ud af batteriet ned til
+          **{{ states('input_number.batterisalg_target_soc') }}% SOC**.
+          AI-styringen er på pause.
+    - type: entities
+      title: 👁️ Live Overblik
+      show_header_toggle: false
+      state_color: true
+      entities:
+        - entity: select.solplanet_battery_oe012k60z2550185_work_mode
+          name: Inverter Arbejdstilstand
+          icon: mdi:state-machine
+        - entity: sensor.solplanet_automation_plan
+          name: Aktuel Strategi
+          icon: mdi:brain
+        - type: conditional
+          conditions:
+            - condition: state
+              entity: input_boolean.override_eksport_stop
+              state: "on"
+          row:
+            entity: input_boolean.override_eksport_stop
+            name: "⚠️ OVERRIDE Aktiv: Export Stop ignoreret"
+            icon: mdi:alert-outline
+        - type: section
+          label: Elpriser Lige Nu
+        - entity: sensor.stromligning_spotprice_ex_vat
+          name: Aktuel Salgspris
+          icon: mdi:cash-plus
+        - entity: sensor.stromligning_current_price_vat
+          name: Aktuel Købspris
+          icon: mdi:cash-minus
+        - type: section
+          label: Forbrug & Produktion NU
+        - entity: sensor.solplanet_battery_oe012k60z2550185_pv_power
+          name: Nuværende Solproduktion
+          icon: mdi:white-balance-sunny
+        - type: attribute
+          entity: sensor.solplanet_automation_plan
+          attribute: ml_expected_load_w
+          name: Nuværende Husforbrug (AI-Beregnet)
+          icon: mdi:home-lightning-bolt
+          suffix: " W"
+        - entity: sensor.solcelle_prognose_resterende
+        - entity: sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge
+          name: Batteri Niveau (SOC)
+    - type: grid
+      columns: 2
+      square: false
+      cards:
+        - type: gauge
+          entity: sensor.solplanet_battery_oe012k60z2550185_pv_power
+          name: Solproduktion
+          min: 0
+          max: 16000
+          severity:
+            green: 2000
+            yellow: 500
+            red: 0
+        - type: gauge
+          entity: sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge
+          name: Batteriniveau
+          min: 0
+          max: 100
+          severity:
+            green: 20
+            yellow: 10
+            red: 0
+    - type: entities
+      title: Real-time Energy Flow
+      entities:
+        - type: attribute
+          entity: sensor.solplanet_automation_plan
+          attribute: ml_expected_load_w
+          name: Husstand Forbrug
+          icon: mdi:home-lightning-bolt
+          suffix: " W"
+        - entity: sensor.p1_meter_effekt
+          name: Net Import/Eksport
+        - entity: sensor.solplanet_oe012k60z2550185_power
+          name: Batteri Lade/Aflade
+    - type: entities
+      title: 🛠️ Avancerede Indstillinger
+      show_header_toggle: false
+      state_color: true
+      entities:
+        - entity: input_boolean.vis_menu_kontrol
+          name: ⚙️ Vis Kontrolfunktioner & Profil
+          icon: mdi:tune
+        - entity: input_boolean.vis_menu_strombors
+          name: 💰 Vis Strømbørs (Manuel & Auto)
+          icon: mdi:cash-multiple
+        - entity: input_boolean.vis_menu_inverter
+          name: ⚡ Vis Inverter Status & Limits
+          icon: mdi:information-outline
+        - entity: input_boolean.vis_menu_elbil
+          name: 🚗 Vis Elbil & Lade-beskyttelse
+          icon: mdi:ev-station
+        - entity: input_boolean.vis_menu_ai_plan
+          name: ⏱️ Vis Fuld AI Plan (12 Timer)
+          icon: mdi:format-list-bulleted
+        - entity: input_boolean.ai_debug_mode
+          name: Debug Ai planner (Kræver tålmodighed)
+    - type: conditional
+      conditions:
+        - condition: state
+          entity: input_boolean.vis_menu_kontrol
+          state: "on"
+      card:
+        type: entities
+        title: ⚙️ Kontrolfunktioner
+        show_header_toggle: false
+        state_color: true
+        entities:
+          - entity: input_select.solcelle_profil
+            name: Valgt AI Profil
+          - entity: input_number.min_eksport_pris
+            name: Min. Acceptable Salgspris (Eksport-stop)
+          - entity: input_number.sol_throttle_safety_price
+            name: Min. Pris før Throttle
+          - entity: input_number.sol_throttle_aggressivitet
+            name: Sol Throttle Aggressivitet (0-10)
+          - entity: input_number.sol_laas_min_soc
+            name: Sol-lås Min SOC
+          - type: section
+            label: Manuelle Overstyringer
+          - entity: input_boolean.solcelle_ai_styring_aktiv
+            name: AI Solcelle-Styring Aktiv (Master Switch)
+          - entity: input_boolean.override_forbud_soleksport
+            name: Tving Eksport-stop
+          - entity: input_boolean.override_eksport_stop
+            name: Override af eksport-stop fra automation
+          - entity: input_boolean.trigger_ai_beregning
+            name: Tving AI Beregning NU
+    - type: conditional
+      conditions:
+        - condition: state
+          entity: input_boolean.vis_menu_strombors
+          state: "on"
+      card:
+        type: vertical-stack
+        cards:
+          - type: entities
+            title: 💰 Strømbørs Indstillinger
+            show_header_toggle: false
+            state_color: true
+            entities:
+              - type: section
+                label: AI Arbitrage Grænser
+              - entity: input_number.roed_profit_margin
+              - entity: input_number.groen_min_salgspris
+              - entity: input_number.sol_throttle_pris_dyk
+              - entity: input_number.tvangsladning_ved_negativ_pris
+              - type: section
+                label: Manuelt Batterisalg (Overstyring)
+              - entity: input_select.batterisalg_tilstand
+                name: Salgs-tilstand
+              - entity: input_datetime.batterisalg_start_tid
+                name: Starttidspunkt for salg
+              - entity: input_number.batterisalg_kwh
+                name: Mængde der skal sælges
+              - entity: input_number.batteri_salgs_buffer
+              - entity: input_number.sol_faktor_threshold
+                name: Min. Sol-Prognose for Salg (%)
+              - entity: input_boolean.batterisalg_igang_nu
+                name: "Status: Salg i gang NU (Nødbremse)"
+          - type: markdown
+            content: >
+              **💡 Min. Sol-Prognose for Salg (%)**
+
+              Styrer AI'ens "selvtillid" til at sælge batteristrøm tidligt på
+              dagen.
+
+              * **100%:** Sælger hvis vejrudsigten lover *præcis* det, huset
+              skal bruge resten af dagen. * **150% (Anbefalet):** Kræver at
+              vejrudsigten lover mindst 50% *overskudssol*, før den tør sælge ud
+              af batteriet, så du ikke mangler strøm til aften.
+
+               💡 **Min. Prisfald for Sol-Throttle (kr)**
+              Styrer AI'ens grådighed for at udskyde opladning til fordel for
+              salg om formiddagen.
+
+              * Værdien angiver, hvor meget prisen **mindst** skal falde senere
+              på dagen, før AI'en anser det for rentabelt at drosle batteriet
+              ned til 0W og sælge strømmen nu. * **Lav værdi (f.eks. 0.10 kr):**
+              Aggressiv throttling. Sælger hellere nu, selv ved små prisfald. *
+              **Høj værdi (f.eks. 0.50 kr):** Konservativ. Kræver et massivt
+              prisdyk senere, før den tør vente med at lade batteriet.
+    - type: conditional
+      conditions:
+        - condition: state
+          entity: input_boolean.vis_menu_inverter
+          state: "on"
+      card:
+        type: vertical-stack
+        cards:
+          - type: entities
+            title: ⚡ Inverter Opsætning
+            show_header_toggle: false
+            state_color: true
+            entities:
+              - type: section
+                label: Fysiske Grænser
+              - entity: number.solplanet_battery_oe012k60z2550185_schedule_input_power
+                name: Max Opladning (Køb/Sol)
+              - entity: >-
+                  number.solplanet_battery_oe012k60z2550185_schedule_output_power
+                name: Max Afladning (Sælg/Elbil)
+              - entity: input_number.batteri_min_soc
+                name: Batteri Min. Reserve (SOC)
+              - type: section
+                label: Hardware Specifikationer
+              - type: attribute
+                entity: sensor.solplanet_automation_plan
+                attribute: calc_true_capacity_kwh
+                name: Nuværende "Sande" Kapacitet (Temp. Korrigeret)
+                icon: mdi:battery-heart-variant
+                suffix: " kWh"
+              - entity: sensor.batteri_cyklusser_koert
+                name: Kørte Cyklusser (Aktuelt)
+                icon: mdi:history
+          - type: markdown
+            content: >
+              **💡 Hvorfor indtaste hardware-data?**
+
+              Systemet bruger disse tal til at udregne dit batteris **økonomiske
+              slitage**. Når AI'en overvejer at købe billig strøm om natten for
+              at sælge om dagen, vil den **aflyse handlen**, hvis profitten ikke
+              dækker slitagen. Det beskytter dit anlæg mod at blive slidt op for
+              småører.
+
+              *Din nuværende slitagepris er automatisk beregnet af AI'en til:
+              **{{ state_attr('sensor.solplanet_automation_plan',
+              'slitagepris_kr_kwh') }} kr/kWh***
+    - type: conditional
+      conditions:
+        - condition: state
+          entity: input_boolean.vis_menu_elbil
+          state: "on"
+      card:
+        type: vertical-stack
+        cards:
+          - type: markdown
+            content: >
+              ### 🚗 Elbil & Lade-beskyttelse Vælg hvordan hus-batteriet skal
+              beskyttes, når elbilen lader.  Dette forhindrer, at hus-batteriet
+              tømmer sig selv ned i bilen.
+          - type: entities
+            show_header_toggle: false
+            state_color: true
+            entities:
+              - entity: input_select.elbil_skjold_mode
+                name: Skjold Tilstand
+              - type: conditional
+                conditions:
+                  - condition: state
+                    entity: input_select.elbil_skjold_mode
+                    state: Simpel (Total Forbrugsgrænse)
+                row:
+                  entity: input_number.elbil_skjold_simpel_graense
+                  name: Aktiver Skjold ved totalforbrug (W)
+    - type: conditional
+      conditions:
+        - condition: state
+          entity: input_boolean.vis_menu_ai_plan
+          state: "on"
+      card:
+        type: markdown
+        title: ⏱️ Fuld Automation Plan (Næste 12 timer)
+        content: >
+          <small>
+
+          *Sidst genberegnet: {{ state_attr('sensor.solplanet_automation_plan',
+          'sidst_opdateret') }}* <hr> {% if
+          is_state('input_boolean.ai_debug_mode', 'on') and
+          state_attr('sensor.solplanet_automation_plan', 'historik_2h') %} **{{
+          (now() - timedelta(hours=2)).strftime('%H:00') }}** {{
+          state_attr('sensor.solplanet_automation_plan', 'historik_2h') }}<br>
+          **{{ (now() - timedelta(hours=1)).strftime('%H:00') }}** {{
+          state_attr('sensor.solplanet_automation_plan', 'historik_1h') }}<br>
+          <hr> {% endif %} {%- for i in range(1, 13) %} **{{ (now() +
+          timedelta(hours=i)).strftime('%H:00') }}** {{
+          state_attr('sensor.solplanet_automation_plan', 'plan_' ~ i ~ 'h')
+          }}<br> {%- endfor %}
+
+          </small>

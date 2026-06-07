@@ -1,1 +1,99 @@
+type: custom:apexcharts-card
+header:
+  show: true
+  title: "🔮 SA: 24h Automation Forecast"
+  show_states: false
+graph_span: 24h
+span:
+  start: hour
+now:
+  show: true
+  label: Now
+  color: red
 
+apex_config:
+  tooltip:
+    shared: true
+  stroke:
+    dashArray:
+      - 4 # Dashed line for Theoretical Solar
+      - 0 # Solid line for Real Solar
+      - 0 # Solid columns for Consumption
+      - 0 # Solid line for Battery SOC
+
+yaxis:
+  - id: watt
+    min: 0
+    decimals: 0
+    apex_config:
+      title:
+        text: Power (W)
+  - id: soc
+    min: 0
+    max: 100
+    opposite: true
+    decimals: 0
+    apex_config:
+      title:
+        text: Battery (%)
+
+series:
+  # --- THEORETICAL SOLAR ---
+  - entity: sensor.solplanet_automation_plan
+    name: Expected Solar (Theoretical)
+    type: line
+    yaxis_id: watt
+    color: "#ff9800"
+    stroke_width: 2
+    curve: smooth
+    data_generator: >
+      if (!entity.attributes.sim_times || !entity.attributes.sim_sol_w) return [];
+      return entity.attributes.sim_times.map((time, index) => {
+        let properDate = time.replace(' ', 'T') + ':00:00';
+        return [new Date(properDate).getTime(), entity.attributes.sim_sol_w[index]];
+      });
+
+  # --- REAL SOLAR (AFTER CURTAILMENT/THROTTLE) ---
+  - entity: sensor.solplanet_automation_plan
+    name: Real Sun (Curtailed)
+    type: area
+    yaxis_id: watt
+    color: "#ffb74d"
+    opacity: 0.4
+    stroke_width: 2
+    curve: smooth
+    data_generator: >
+      if (!entity.attributes.sim_times || !entity.attributes.sim_real_sol_w) return [];
+      return entity.attributes.sim_times.map((time, index) => {
+        let properDate = time.replace(' ', 'T') + ':00:00';
+        return [new Date(properDate).getTime(), entity.attributes.sim_real_sol_w[index]];
+      });
+
+  # --- PREDICTED HOUSE CONSUMPTION (ML MODEL) ---
+  - entity: sensor.solplanet_automation_plan
+    name: Predicted Consumption
+    type: column
+    yaxis_id: watt
+    color: "#3498db"
+    opacity: 0.6
+    data_generator: >
+      if (!entity.attributes.sim_times || !entity.attributes.sim_forbrug_w) return [];
+      return entity.attributes.sim_times.map((time, index) => {
+        let properDate = time.replace(' ', 'T') + ':00:00';
+        return [new Date(properDate).getTime(), entity.attributes.sim_forbrug_w[index]];
+      });
+
+  # --- PREDICTED BATTERY SOC ---
+  - entity: sensor.solplanet_automation_plan
+    name: Predicted SOC
+    type: line
+    yaxis_id: soc
+    color: "#2ecc71"
+    stroke_width: 3
+    curve: smooth
+    data_generator: >
+      if (!entity.attributes.sim_times || !entity.attributes.sim_soc) return [];
+      return entity.attributes.sim_times.map((time, index) => {
+        let properDate = time.replace(' ', 'T') + ':00:00';
+        return [new Date(properDate).getTime(), entity.attributes.sim_soc[index]];
+      });
