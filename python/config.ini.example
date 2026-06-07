@@ -1,0 +1,111 @@
+[General]
+# Language for the messages sent to Home Assistant (Options: DA, EN)
+LANGUAGE = EN
+# Timezone for accurate time-based calculations (e.g., Europe/Copenhagen, Europe/Oslo)
+TIMEZONE = Europe/Copenhagen
+# Local currency symbol used in logs and terminal (e.g., kr, EUR, $, £)
+CURRENCY = kr
+# Local VAT / Tax rate multiplier (e.g., 1.25 for 25% Denmark, 1.19 for 19% Germany, 1.0 for no VAT)
+VAT_RATE = 1.25
+
+[HomeAssistant]
+# IP address and port of your Home Assistant instance
+HA_IP = 192.168.1.100
+HA_PORT = 8123
+# Long-Lived Access Token (Create this in your Home Assistant profile settings)
+HA_TOKEN = INSERT TOKEN
+TRAINING_DAYS = 14
+
+[Hardware]
+# Physical capacity of your battery system
+BATTERY_CAPACITY_KWH = 20.0
+# Maximum power your inverter can charge/discharge (in Watts)
+MAX_CHARGE_W = 10000
+MAX_DISCHARGE_W = 10000
+# Total investment cost of the battery system (in your local currency, e.g., DKK)
+BATTERY_PRICE_KR = 64000
+# Expected lifespan of the battery bank in full cycles (e.g., 6000 for LiFePO4)
+BATTERY_CYCLES = 6000
+
+[Providers]
+# Supported electricity price systems: Stromligning, Nordpool, ENTSO-E, Tibber
+# (The code automatically detects and adapts to the format based on the sensor's attributes)
+PRICE_PROVIDER = Stromligning
+
+# Supported solar forecasts: Custom_ML, Solcast, Forecast.Solar, Open-Meteo
+FORECAST_PROVIDER = Custom_ML
+
+[Sensors_Core]
+BATTERY_SOC = sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge
+# =====================================================================
+# ELECTRICITY PRICE SENSORS (Buy & Sell)
+# =====================================================================
+# PRICE_BUY: Enter the sensor for your current buying price (preferably including VAT/taxes)
+# - Stromligning: sensor.stromligning_current_price_vat
+# - Nord Pool: sensor.nordpool_kwh_sek_dk2_3_10_025 (or your local zone sensor)
+# - ENTSO-E: sensor.entsoe_electricity_average_price_today
+# - Tibber: sensor.electricity_price_your_address
+PRICE_BUY = sensor.stromligning_current_price_vat
+# PRICE_SELL: Enter the sensor for your current selling price / spot price
+# - Stromligning: sensor.stromligning_spotprice_ex_vat
+# - Nord Pool / ENTSO-E: (Use the same sensor as PRICE_BUY if a dedicated sell sensor is not available)
+PRICE_SELL = sensor.stromligning_spotprice_ex_vat
+
+# PRICE_BUY_MAX: Used to find today's maximum buying price (only required for Stromligning)
+PRICE_BUY_MAX = sensor.stromligning_today_max_vat
+# PRICE_BUY_TOMORROW & PRICE_SELL_TOMORROW:
+# - Stromligning: Enter the tomorrow-sensors as shown below.
+# - Nord Pool / ENTSO-E / Tibber: Leave these fields BLANK (the system automatically fetches tomorrow's prices directly via the primary sensors above)
+PRICE_BUY_TOMORROW = sensor.stromligning_tomorrow_price_vat, binary_sensor.stromligning_tomorrow_price_vat, binary_sensor.stromligning_tomorrow_current_price_vat
+PRICE_SELL_TOMORROW = sensor.stromligning_tomorrow_spotprice_ex_vat, binary_sensor.stromligning_tomorrow_spotprice_ex_vat
+
+WEATHER_ENTITY = weather.forecast_home
+# WEATHER_TEMP: A dedicated outdoor temperature sensor (e.g., local weather station).
+# Leave blank if you don't have one; the system will automatically fall back
+# to extracting the current temperature directly from the WEATHER_ENTITY above.
+WEATHER_TEMP = sensor.vejr_station_ude_temperatur
+PV_POWER = sensor.solplanet_battery_oe012k60z2550185_pv_power
+GRID_POWER = sensor.p1_meter_effekt
+BATTERY_POWER = sensor.solplanet_battery_oe012k60z2550185_battery_power
+INVERTER_MIN_SOC = number.solplanet_soc_min
+
+# Solar Forecasts
+SOLAR_FORECAST_PRIMARY = sensor.ml_solcelle_prognose_korrigeret
+
+# Fallback / Raw Forecasts (Comma-separated list for fallback sensors)
+# Example: sensor.energy_production_tomorrow_2, sensor.energy_production_tomorrow_3
+# Leave blank if not used.
+RAW_FORECASTS = sensor.energy_production_tomorrow_2, sensor.energy_production_tomorrow_3
+
+[Sensors_Input]
+# UI Helpers (These are created automatically via the included package.yaml)
+SELECTED_PROFILE = input_select.solcelle_profil
+SOLAR_FACTOR = input_number.sol_faktor_threshold
+MIN_EXPORT_PRICE = input_number.min_eksport_pris
+THROTTLE_AGGRESSION = input_number.sol_throttle_aggressivitet
+RED_PROFIT_MARGIN = input_number.roed_profit_margin
+GREEN_MIN_SELL_PRICE = input_number.groen_min_salgspris
+BATTERY_PRICE_KR = input_number.batteri_pris_kr
+BATTERY_CYCLES = input_number.batteri_cyklusser
+MIN_SOC = input_number.batteri_min_soc
+
+
+# EV Section. If you don't have an EV, leave EV_CHARGERS and EV_STATUS_SENSORS blank,
+# and ensure the 'EV Shield' is set to 'Deaktiveret' in your Home Assistant dashboard.
+
+[Sensors_EV]
+# Comma-separated list of EV charger power sensors (in Watts).
+# Leave blank if you don't have any EVs.
+# Example: sensor.abb_power_active_import, sensor.shellyplus1pm_switch_0_power
+# Chargeres meassuring in Watt in this list (W)
+EV_CHARGERS_W =
+
+# Comma-separated list of EV charger power sensors (in kW)
+EV_CHARGERS_KW = sensor.keba_effekt, sensor.abb_power_active_import
+
+# Define sensors for chargers that report a status_id (comma-separated). Leave blank if 0 chargers.
+# The system checks these for 'status_id = 5' to ensure the EV shield
+# does not block when the car is actively charging on surplus solar.
+EV_STATUS_SENSORS = sensor.ev_system_status, sensor.ev3_system_status
+
+
