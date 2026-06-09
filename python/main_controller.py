@@ -181,10 +181,8 @@ MAX_DISCHARGE_W = int(config['Hardware'].get('MAX_DISCHARGE_W', 10000))
 c_sens = config['Sensors_Core']
 SENSOR_SOC = c_sens.get('BATTERY_SOC', '')
 SENSOR_PRIS_NU_EX = c_sens.get('PRICE_SELL', '')
-SENSOR_PRIS_TOMORROW_EX = c_sens.get('PRICE_SELL_TOMORROW', '')
 SENSOR_PRIS_NU_INKL = c_sens.get('PRICE_BUY', '')
 SENSOR_PRIS_TOMORROW_INKL = c_sens.get('PRICE_BUY_TOMORROW', '')
-SENSOR_MAX_PRIS_INKL = c_sens.get('PRICE_BUY_MAX', '')
 SENSOR_VEJR = c_sens.get('WEATHER_ENTITY', '')
 SENSOR_UDE_TEMP = c_sens.get('WEATHER_TEMP', '')
 SENSOR_PV = c_sens.get('PV_POWER', '')
@@ -217,10 +215,6 @@ SENSOR_THROTTLE_AGGRESSION = "input_number.sol_throttle_aggressivitet"
 SENSOR_SOL_LAAS_MIN_SOC = "input_number.sol_laas_min_soc"
 SENSOR_ROED_PROFIT = "input_number.roed_profit_margin"
 SENSOR_GROEN_MIN_SALG = "input_number.groen_min_salgspris"
-SENSOR_OVERRIDE_CHARGE_0 = "input_boolean.override_charge_zero"
-SENSOR_BATT_KAPACITET = "input_number.batteri_kapacitet_kwh"
-SENSOR_BATT_PRIS = "input_number.batteri_pris_kr"
-SENSOR_BATT_CYKLUSSER = "input_number.batteri_cyklusser"
 SENSOR_EV_MODE = "input_select.elbil_skjold_mode"
 SENSOR_EV_THRESHOLD = "input_number.elbil_skjold_simpel_graense"
 SENSOR_TVANGSLADNING = "input_number.tvangsladning_ved_negativ_pris"
@@ -359,13 +353,12 @@ def get_weather_forecast():
     return []
 
 def fetch_universal_prices(sensor_now, sensors_tomorrow_str):
-    """Fetches and extracts raw price arrays from various European HA integrations (Nord Pool, ENTSO-E, Tibber, Stromligning)"""
+    """Fetches and extracts raw price arrays from various European HA integrations, filtering duplicates."""
     all_entries = []
 
     # 1. Fetch from the primary current price sensor
     attrs_now = get_ha_attributes(sensor_now)
     if attrs_now:
-        # Check standard attributes for arrays containing today's or tomorrow's prices
         for key in ['prices', 'prices_today', 'raw_today', 'price_info', 'normal', 'prices_tomorrow', 'raw_tomorrow']:
             if key in attrs_now and isinstance(attrs_now[key], list):
                 all_entries.extend(attrs_now[key])
@@ -380,7 +373,35 @@ def fetch_universal_prices(sensor_now, sensors_tomorrow_str):
                     if key in attrs_tom and isinstance(attrs_tom[key], list):
                         all_entries.extend(attrs_tom[key])
 
-    return all_entries
+    # 3. Deduplicate, filter past hours, and sort to prevent midnight overlaps
+    from datetime import datetime
+    now = datetime.now()
+    unique_prices = {}
+
+    for item in all_entries:
+        if not isinstance(item, dict):
+            continue
+
+        # Locate the timestamp key
+        time_str = item.get('start') or item.get('time') or item.get('hour')
+        if not time_str:
+            continue
+
+        try:
+            # Parse time, handle standard ISO formats, and STRIP timezone (make naive)
+            start_time = datetime.fromisoformat(str(time_str).replace('Z', '+00:00')).replace(tzinfo=None)
+
+            # Keep the price only if the hour has not passed yet
+            if start_time >= now.replace(minute=0, second=0, microsecond=0):
+                # Use a normalized string as key so valid tomorrow-data overwrites dummy 0.00 data
+                norm_key = start_time.strftime("%Y-%m-%d %H:%M")
+                unique_prices[norm_key] = item
+        except (KeyError, ValueError, TypeError):
+            continue
+
+    # Return as a chronologically sorted list
+    sorted_prices = [unique_prices[k] for k in sorted(unique_prices.keys())]
+    return sorted_prices
 
 def build_time_price_dict(price_array):
     """Normalizes variation in JSON keys across different integrations into a standardized hourly price dictionary"""
@@ -389,7 +410,7 @@ def build_time_price_dict(price_array):
         if not isinstance(p, dict): continue
         try:
             # Detect time stamp key variations
-            start_str = p.get('start') or p.get('datetime') or p.get('time') or p.get('startsAt') or p.get('period_start')
+            start_str = p.get('start') or p.get('datetime') or p.get('time') or p.get('startsAt') or p.get('period_start') or p.get('hour')
             if not start_str: continue
 
             dt = datetime.fromisoformat(start_str.replace('Z', '+00:00'))
@@ -443,7 +464,7 @@ def get_max_peak_in_window(current_now, hours_ahead, price_dict):
     for time_str, price in price_dict.items():
         try:
             start_dt = datetime.strptime(time_str, "%Y-%m-%d %H")
-            if current_now <= start_dt <= future_limit:
+            if current_now <= start_dt < future_limit:
                 relevant_prices.append(float(price))
         except:
             pass
@@ -569,7 +590,6 @@ while True:
 
         is_currently_selling = current_action_id in [4, 11] # 4=Salg, 11=Pre-dump
         is_currently_export_stopped = "Eksport Stop" in current_plan_state
-        override_charge_zero = get_ha_state(SENSOR_OVERRIDE_CHARGE_0, 'text') == "on"
 
         pv_w = get_ha_state(SENSOR_PV)
         p1_w = get_ha_state(SENSOR_P1)
@@ -623,13 +643,42 @@ while True:
         buy_dict = build_time_price_dict(buy_raw_data)
 
         # Fetch and parse sell prices (Universal)
-        sell_raw_data = fetch_universal_prices(SENSOR_PRIS_NU_EX, SENSOR_PRIS_TOMORROW_EX)
+        # Fetch and parse sell prices (Universal)
+        sell_raw_data = fetch_universal_prices(SENSOR_PRIS_NU_EX, "")
         sell_dict = build_time_price_dict(sell_raw_data)
 
-        # Dynamic Regional Fallback: If no explicit sell prices are available, generate them from buy prices minus local VAT
+        # --- NY DYNAMISK FALLBACK MED NESTED TARIFF-SUPPORT ---
+        buy_attrs = get_ha_attributes(SENSOR_PRIS_NU_INKL)
+        eds_main_tariffs = buy_attrs.get('tariffs', {})
+
+        # EDS lægger tarifferne ind i et ekstra 'tariffs' lag. Vi tjekker om dette nested lag findes:
+        if 'tariffs' in eds_main_tariffs:
+            eds_hourly_tariffs = eds_main_tariffs.get('tariffs', {})
+            eds_add_tariffs = eds_main_tariffs.get('additional_tariffs', {})
+        else:
+            eds_hourly_tariffs = eds_main_tariffs
+            eds_add_tariffs = buy_attrs.get('additional_tariffs', {})
+
+        add_tariff_sum = sum([float(v) for v in eds_add_tariffs.values()]) if isinstance(eds_add_tariffs, dict) else 0.0
+
         for time_key, buy_price in buy_dict.items():
             if time_key not in sell_dict:
-                sell_dict[time_key] = float(buy_price) / VAT_RATE
+                hour_str = str(datetime.strptime(time_key, "%Y-%m-%d %H").hour)
+                hour_tariff = float(eds_hourly_tariffs.get(hour_str, 0.0)) if isinstance(eds_hourly_tariffs, dict) else 0.0
+                total_tariff = hour_tariff + add_tariff_sum
+
+                # I DK tillægges tariffer og spotpris FØR momsen beregnes.
+                # For at finde den rene spotpris: (Købspris / moms) - Tariffer
+                ren_spotpris = (float(buy_price) / VAT_RATE) - total_tariff
+                sell_dict[time_key] = ren_spotpris
+
+        # Opdater den live salgspris (hjernen), hvis vi ikke har en dedikeret salgs-sensor
+        if not SENSOR_PRIS_NU_EX:
+            price_now_ex = sell_dict.get(now.strftime("%Y-%m-%d %H"), 0.0)
+
+        # Opdater den live salgspris (hjernen), hvis vi ikke har en dedikeret salgs-sensor
+        if not SENSOR_PRIS_NU_EX:
+            price_now_ex = sell_dict.get(now.strftime("%Y-%m-%d %H"), 0.0)
 
         forecasts_list = get_weather_forecast()
         weather_dict = build_weather_dict(forecasts_list)
@@ -666,7 +715,7 @@ while True:
             log_entry = {
                 "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
                 "profil": valgt_profil,
-                "batteri_soc": batt_soc,
+                "batteri_soc": battery_soc,
                 "pris_koeb_inkl_moms": 0.0,
                 "pris_salg_ex_moms": 0.0,
                 "sol_prognose_nu_w": 0.0,
@@ -998,15 +1047,53 @@ while True:
                 ev_dynamic_discharge = int(min(MAX_DISCHARGE_W, naked_house_w + 200))
                 ev_msg = get_msg("ev_shield_advanced", w=ev_dynamic_discharge)
 
-        # --- PRE-BEREGNING AF PEAKS (Debug) ---
-        hours_left_evening = max(1, 24 - now.hour)
-        max_evening_peak = get_max_peak_in_window(now, hours_left_evening, sell_dict)
+        # --- PRE-CALCULATION OF PEAKS & VOLUME FOR DEBUG ---
+        # Aften-salg: Beregnes fra nuværende niveau til aften-mål
+        available_sell_kwh_evening = max(0.0, (BATTERY_CAPACITY_KWH * (battery_soc / 100.0)) - (BATTERY_CAPACITY_KWH * (green_target_soc / 100.0)))
 
-        tomorrow_06 = (now + timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
-        max_morning_peak = get_max_peak_in_window(tomorrow_06, 4, sell_dict)
+        # Morgen-salg: Estimat af volumen. Hvis vi sælger til aften, falder vi til green_target_soc. Ellers falder vi fra nuværende.
+        expected_soc_before_morning = green_target_soc if available_sell_kwh_evening > 0 else battery_soc
+        # Fratræk et groft estimat for nattens forbrug (f.eks. 15% af kapaciteten) for et mere retvisende time-estimat
+        expected_soc_before_morning = max(min_soc_val, expected_soc_before_morning - 15.0)
 
-        # Dette printer nu hver gang, uanset hvad action_id bliver
-        print(f"DEBUG: Peak-finder kiggede frem. Aften-peak: {max_evening_peak:.2f} kr | Morgen-peak: {max_morning_peak:.2f} kr.")
+        available_sell_kwh_morning = max(0.0, (BATTERY_CAPACITY_KWH * (expected_soc_before_morning / 100.0)) - (BATTERY_CAPACITY_KWH * (min_soc_val / 100.0)))
+
+        hours_needed_morning = max(1, math.ceil(available_sell_kwh_morning / (MAX_DISCHARGE_W / 1000.0)))
+        hours_needed_evening = max(1, math.ceil(available_sell_kwh_evening / (MAX_DISCHARGE_W / 1000.0)))
+
+        # Extract future prices to find exact peak times and thresholds
+        future_prices_today = [{'time': datetime.strptime(k, "%Y-%m-%d %H"), 'price': v} for k, v in sell_dict.items() if now <= datetime.strptime(k, "%Y-%m-%d %H") < now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)]
+
+        # Find next upcoming morning window (06:00 to 11:59)
+        morning_start = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        if now.hour >= 12:
+            morning_start += timedelta(days=1)
+        morning_end = morning_start.replace(hour=12)
+
+        future_prices_morning = [{'time': datetime.strptime(k, "%Y-%m-%d %H"), 'price': v} for k, v in sell_dict.items() if morning_start <= datetime.strptime(k, "%Y-%m-%d %H") < morning_end]
+
+        max_evening_peak = 0.0
+        evening_peak_time = "N/A"
+        evening_threshold = 0.0
+
+        if future_prices_today:
+            sorted_evening = sorted(future_prices_today, key=lambda x: x['price'], reverse=True)
+            max_evening_peak = sorted_evening[0]['price']
+            evening_peak_time = sorted_evening[0]['time'].strftime("%H:%M")
+            evening_threshold = sorted_evening[min(hours_needed_evening, len(sorted_evening)) - 1]['price']
+
+        max_morning_peak = 0.0
+        morning_peak_time = "N/A"
+        morning_threshold = 0.0
+
+        if future_prices_morning:
+            sorted_morning = sorted(future_prices_morning, key=lambda x: x['price'], reverse=True)
+            max_morning_peak = sorted_morning[0]['price']
+            morning_peak_time = sorted_morning[0]['time'].strftime("%H:%M")
+            morning_threshold = sorted_morning[min(hours_needed_morning, len(sorted_morning)) - 1]['price']
+
+        print(f"DEBUG: Peak-Finder [Morning]: Max {max_morning_peak:.2f} @ {morning_peak_time}. Needs {hours_needed_morning}h to sell volume. Threshold: {morning_threshold:.2f}")
+        print(f"DEBUG: Peak-Finder [Evening]: Max {max_evening_peak:.2f} @ {evening_peak_time}. Needs {hours_needed_evening}h to sell volume. Threshold: {evening_threshold:.2f}")
         # --- AI STRATEGY SELECTION (PRIORITY RANKING) ---
         if is_tvangsladning_now:
             handling = get_msg("tvangsladning", pris=price_now_inc)
@@ -1052,12 +1139,8 @@ while True:
 
             elif 6 <= now.hour <= 11 and price_now_ex >= total_sell_barrier and price_now_ex >= green_min_sell_price and sol_faktor >= bruger_sol_faktor and (battery_soc >= (min_soc_val + 5.0) or (is_currently_selling and battery_soc >= min_soc_val)):
 
-                # PEAK-AWARE MORGEN: Kig frem til kl. 12:00 for at finde absolutte top
-                hours_left_morning = max(1, 12 - now.hour)
-                max_morning_peak = get_max_peak_in_window(now, hours_left_morning, sell_dict)
-
-                # Sælg ned til bunden (min_soc_val) da solen tager over
-                if price_now_ex >= (max_morning_peak * 0.95):
+                # Sell to bottom (min_soc_val) using dynamic volume threshold
+                if price_now_ex >= (morning_threshold * 0.98):
                     handling = get_msg("smart_sell_morning", soc=int(min_soc_val))
                     target_mode = "Custom"
                     target_discharge = MAX_DISCHARGE_W
@@ -1065,12 +1148,8 @@ while True:
 
             elif price_now_ex >= total_sell_barrier and price_now_ex >= green_min_sell_price and (battery_soc >= (green_target_soc + salgs_buffer) or (is_currently_selling and battery_soc >= green_target_soc)):
 
-                # PEAK-AWARE AFTEN: Kig frem til midnat for at finde absolutte top
-                hours_left_evening = max(1, 24 - now.hour)
-                max_evening_peak = get_max_peak_in_window(now, hours_left_evening, sell_dict)
-
-                # Sælg overskud ned til din sikre natte-overlevelses-grænse (green_target_soc)
-                if price_now_ex >= (max_evening_peak * 0.95):
+                # Sell surplus down to safe night survival limit using dynamic volume threshold
+                if price_now_ex >= (evening_threshold * 0.98):
                     handling = get_msg("smart_sell_evening", soc=int(green_target_soc))
                     target_mode = "Custom"
                     target_discharge = MAX_DISCHARGE_W
@@ -1270,16 +1349,12 @@ while True:
             elif valgt_profil == "Smart Selvforsyning":
                 if 6 <= future.hour <= 11 and sol_faktor >= bruger_sol_faktor and sim_soc >= (min_soc_val + 5.0):
                     if hour_max_peak >= total_sell_barrier and hour_max_peak >= green_min_sell_price:
-                        hours_left_morning = max(1, 12 - future.hour)
-                        max_morning_peak = get_max_peak_in_window(future.replace(minute=0, second=0, microsecond=0), hours_left_morning, sell_dict)
-                        if hour_max_peak >= (max_morning_peak - 0.05):
+                        if hour_max_peak >= (morning_threshold * 0.98):
                             is_arbitrage_hour = True
 
                 elif sim_soc >= (green_target_soc + salgs_buffer):
                     if hour_max_peak >= total_sell_barrier and hour_max_peak >= green_min_sell_price:
-                        hours_left_evening = max(1, 24 - future.hour)
-                        max_evening_peak = get_max_peak_in_window(future.replace(minute=0, second=0, microsecond=0), hours_left_evening, sell_dict)
-                        if hour_max_peak >= (max_evening_peak - 0.05):
+                        if hour_max_peak >= (evening_threshold * 0.98):
                             is_arbitrage_hour = True
             if is_arbitrage_hour:
                 sim_arbitrage_hours.append(key)
