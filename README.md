@@ -13,6 +13,7 @@ Unlike simple "charge-at-night" scripts, this system calculates the **Marginal C
 
 - **Machine Learning Forecasts:** Predicts your "naked" house load (excluding EVs) based on history, weather, and day-of-the-week patterns directly from Home Assistant's built-in database (No InfluxDB required!).
 - **Universal Solar Forecast Parser:** Automatically translates data from Forecast.Solar, Solcast, Open-Meteo, or Custom ML into standardized predictions.
+- **Danish Market Price Support:** Tailored exclusively to the Danish electricity grid with native support for **Strømligning** and **Energi Data Service**. Other integrations (such as Nordpool, Tibber, or ENTSO-E) are explicitly *not* supported.
 - **Degradation Awareness:** Calculates battery wear-and-tear in real-time (**DKK/kWh**) to prevent "cycling for pennies."
 - **Intelligent Battery Export & Home Protection (Arbitrage):** Automatically discharges stored battery power back to the grid during high-price spikes, but only when the market price guarantees a genuine financial profit after degradation. Crucially, the system calculates a dynamic target reserve, ensuring the battery never over-sells and always retains enough capacity to fully cover your own household consumption during morning and evening peaks.
 - **Solar Throttling:** Intelligently sells solar power before price drops to maximize ROI.
@@ -62,10 +63,7 @@ It is recommended to run this on the same server/Raspberry Pi hosting your Home 
     pip install -r requirements.txt
     ```
 3. Create your local config by copying the example: `cp config.ini.example config.ini`.
-4. Edit `config.ini` and fill in:
-    * Your Home Assistant IP, Port, Long-Lived Access Token, and `TRAINING_DAYS`.
-    * Battery specifications (Size, Cycles, Price).
-    * Your exact sensor names in the `[Sensors_Core]` and `[Sensors_EV]` sections.
+4. Edit `config.ini` and fill in your details based on your chosen provider layout (see the Configuration Overview table below).
 5. **INITIAL ML TRAINING (CRITICAL):** Before starting the live controller, you must train the AI on your historical data to generate the first model. Run:
     ```bash
     python3 python/ml_trainer.py
@@ -134,6 +132,9 @@ For the advanced 24-hour visualization, use the code in `forecast_card.yaml` in 
 | `HomeAssistant`| `TRAINING_DAYS` | Number of days of historical data to fetch from HA for AI training (e.g., 7 or 14). |
 | `Hardware` | `BATTERY_CAPACITY_KWH` | Physical size of your battery bank (e.g., 20.0). |
 | `Hardware` | `MAX_CHARGE_W` | Your inverter's maximum charging/discharging speed in Watts. |
+| `Sensors_Core` | `PRICE_BUY` | Core buying price entity. Set to `sensor.stromligning_current_price_vat` for Stromligning, or `sensor.energi_data_service` for Energi Data Service. |
+| `Sensors_Core` | `PRICE_SELL` | Live selling spot price entity. Use `sensor.stromligning_spotprice_ex_vat` for Stromligning. **Leave blank** for Energi Data Service to activate internal fallback tariff/VAT stripping logic. |
+| `Sensors_Core` | `PRICE_BUY_TOMORROW` | Tomorrow's price validation entity. Use `binary_sensor.stromligning_tomorrow_available_vat` for Stromligning. **Leave blank** for Energi Data Service. |
 | `Sensors_EV` | `EV_CHARGERS_W` | Comma-separated list of EV sensors tracking power in Watts (W) to exclude from the core house model. Leave blank if none. |
 | `Sensors_EV` | `EV_CHARGERS_KW`| Comma-separated list of EV sensors tracking power in Kilowatts (kW). Leave blank if none. |
 
