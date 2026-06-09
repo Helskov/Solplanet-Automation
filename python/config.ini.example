@@ -1,6 +1,6 @@
 [General]
 # Language for the messages sent to Home Assistant (Options: DA, EN)
-LANGUAGE = EN
+LANGUAGE = DA
 # Timezone for accurate time-based calculations (e.g., Europe/Copenhagen, Europe/Oslo)
 TIMEZONE = Europe/Copenhagen
 # Local currency symbol used in logs and terminal (e.g., kr, EUR, $, £)
@@ -10,10 +10,10 @@ VAT_RATE = 1.25
 
 [HomeAssistant]
 # IP address and port of your Home Assistant instance
-HA_IP = 192.168.1.100
+HA_IP = 192.168.1.212
 HA_PORT = 8123
 # Long-Lived Access Token (Create this in your Home Assistant profile settings)
-HA_TOKEN = INSERT TOKEN
+HA_TOKEN = INSERT TOKEN HERE
 TRAINING_DAYS = 14
 
 [Hardware]
@@ -27,37 +27,27 @@ BATTERY_PRICE_KR = 64000
 # Expected lifespan of the battery bank in full cycles (e.g., 6000 for LiFePO4)
 BATTERY_CYCLES = 6000
 
-[Providers]
-# Supported electricity price systems: Stromligning, Nordpool, ENTSO-E, Tibber
-# (The code automatically detects and adapts to the format based on the sensor's attributes)
-PRICE_PROVIDER = Stromligning
-
-# Supported solar forecasts: Custom_ML, Solcast, Forecast.Solar, Open-Meteo
-FORECAST_PROVIDER = Custom_ML
 
 [Sensors_Core]
 BATTERY_SOC = sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge
-# =====================================================================
-# ELECTRICITY PRICE SENSORS (Buy & Sell)
-# =====================================================================
-# PRICE_BUY: Enter the sensor for your current buying price (preferably including VAT/taxes)
+
+# ===========================================================================================
+# ELECTRICITY PRICE SENSORS (Buy & Sell) Only Stromligning and Energi Data Service supported
+# ===========================================================================================
+# PRICE_BUY: Enter the sensor for your current buying price including VAT/taxes
 # - Stromligning: sensor.stromligning_current_price_vat
-# - Nord Pool: sensor.nordpool_kwh_sek_dk2_3_10_025 (or your local zone sensor)
-# - ENTSO-E: sensor.entsoe_electricity_average_price_today
-# - Tibber: sensor.electricity_price_your_address
+# - Energi Data Service: sensor.energi_data_service
 PRICE_BUY = sensor.stromligning_current_price_vat
-# PRICE_SELL: Enter the sensor for your current selling price / spot price
+
+# PRICE_SELL: Enter the sensor for your current selling price (spot price)
 # - Stromligning: sensor.stromligning_spotprice_ex_vat
-# - Nord Pool / ENTSO-E: (Use the same sensor as PRICE_BUY if a dedicated sell sensor is not available)
+# - Energi Data Service: Leave BLANK (The system automatically calculates the spot price from the buy sensor)
 PRICE_SELL = sensor.stromligning_spotprice_ex_vat
 
-# PRICE_BUY_MAX: Used to find today's maximum buying price (only required for Stromligning)
-PRICE_BUY_MAX = sensor.stromligning_today_max_vat
-# PRICE_BUY_TOMORROW & PRICE_SELL_TOMORROW:
-# - Stromligning: Enter the tomorrow-sensors as shown below.
-# - Nord Pool / ENTSO-E / Tibber: Leave these fields BLANK (the system automatically fetches tomorrow's prices directly via the primary sensors above)
-PRICE_BUY_TOMORROW = sensor.stromligning_tomorrow_price_vat, binary_sensor.stromligning_tomorrow_price_vat, binary_sensor.stromligning_tomorrow_current_price_vat
-PRICE_SELL_TOMORROW = sensor.stromligning_tomorrow_spotprice_ex_vat, binary_sensor.stromligning_tomorrow_spotprice_ex_vat
+# PRICE_BUY_TOMORROW: Used to fetch tomorrow's prices in advance
+# - Stromligning: binary_sensor.stromligning_tomorrow_available_vat
+# - Energi Data Service: Leave BLANK (Tomorrow's data is fetched directly from the primary sensor)
+PRICE_BUY_TOMORROW = binary_sensor.stromligning_tomorrow_available_vat
 
 WEATHER_ENTITY = weather.forecast_home
 # WEATHER_TEMP: A dedicated outdoor temperature sensor (e.g., local weather station).
