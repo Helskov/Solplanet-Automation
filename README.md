@@ -39,18 +39,30 @@ Before installing, ensure you have the following ready in Home Assistant:
 
 The system is split into two independent parts: The Home Assistant UI/Automations and the Python ML Engine.
 
-### 1. Home Assistant Setup (The UI & Automations)
-We use the Home Assistant *Packages* feature to deploy all buttons, sliders, and automations in one go.
+### 1. Home Assistant Setup (The Inverter Control & UI Package)
+We use the Home Assistant *Packages* feature to deploy the system. The package file contains the **entire core hardware management engine** (REST commands, scripts, automated safety protection loops, and dashboard variables). Without this package file, the Python engine will not be able to interact with your inverter.
 
-1. Choose your preferred language file from the repository (`solplanet_automation_package_en.yaml` or `solplanet_automation_package_da.yaml`).
-2. Copy the file into your Home Assistant `/packages/` folder.
-3. **CRITICAL STEP:** Open the file in a text editor and use **Find and Replace (Ctrl+F)** to replace the placeholders at the top of the file with your actual entities (e.g., `YOUR_INVERTER_IP_HERE`, `YOUR_DEVICE_ID_HERE`, `YOUR_BATTERY_SOC_SENSOR`).
-4. **CONFIGURE RECORDER:** Ensure your Home Assistant database stores enough history for the AI to train on. Open your `configuration.yaml` and add or modify the `recorder` section to keep at least 7-14 days of history (recommend 30 days if your hardware allows):
+1. **ENABLE PACKAGES IN HA:** Before copying any files, you must ensure that the Packages feature is activated in your Home Assistant setup. Open your `configuration.yaml` file and add the following line under the core `homeassistant:` block (if not already present):
+    ```yaml
+    homeassistant:
+      packages: !include_dir_named packages
+    ```
+2. **CREATE PACKAGES FOLDER:** Inside your Home Assistant `/config/` directory, create a new folder named `packages` (if it doesn't exist yet).
+3. **DOWNLOAD PACKAGE FILE:** Choose your preferred language file from this repository (`solplanet_automation_package_en.yaml` or `solplanet_automation_package_da.yaml`) and copy it directly into your newly created `/config/packages/` folder.
+4. **CRITICAL CONFIGURATION STEP:** Open the copied yaml package file in a text editor and use **Find and Replace (Ctrl+F)** to replace the placeholders at the top of the file with your actual entities (e.g., `YOUR_INVERTER_IP_HERE`, `YOUR_DEVICE_ID_HERE`, `YOUR_BATTERY_SOC_SENSOR`).
+
+#### 📦 What's inside the Package File?
+* **REST Commands:** Handles raw JSON payload endpoints transmitted directly to your local inverter network to control hardware constraints (e.g., stopping grid export when spot prices are negative).
+* **Automation Engines:** Orchestrates real-time dynamic scheduling adjustments, manages manual price dumping intervals, and commands real-time anti-grid tracking to match solar production thresholds precisely.
+* **Control Scripts:** Manages active state-machine shifts between Solplanet work modes (`Self-consumption mode`, `Time of use mode`, `Custom mode`) and handles immediate register writes for maximum allowed charge/discharge speeds.
+* **Control UI Helpers:** Instantiates all necessary toggle switches, profile selectors, safety boundary sliders, and input variables required to feed parameters to the AI loop.
+
+5. **CONFIGURE RECORDER:** Ensure your Home Assistant database stores enough history for the AI to train on. Open your `configuration.yaml` and add or modify the `recorder` section to keep at least 7-14 days of history (recommend 30 days if your hardware allows):
     ```yaml
     recorder:
       purge_keep_days: 30
     ```
-5. Restart Home Assistant to generate all helpers, sensors, automations, and apply the recorder settings.
+6. **RESTART:** Restart Home Assistant to activate the core package layer, build out the automation bridges, and apply the database configuration.
 
 ### 2. Python Engine Setup (The Brain)
 It is recommended to run this on the same server/Raspberry Pi hosting your Home Assistant, or any 24/7 Linux machine.
@@ -141,4 +153,4 @@ For the advanced 24-hour visualization, use the code in `forecast_card.yaml` in 
 ---
 
 ## ⚠️ Disclaimer
-*This project is an open-source automation tool provided "as is". It is used entirely at your own risk (på eget ansvar). Solar battery systems involve high voltage, severe safety risks, and expensive hardware. Always ensure your configuration matches your hardware limits. The developers hold absolutely no liability for drained batteries, financial losses, grid penalties, or hardware degradation.*
+*This project is an advanced open-source automation tool provided "as is". It is used entirely at your own risk (på eget ansvar). Solar battery systems involve high voltage, severe safety risks, and expensive hardware. Always ensure your configuration matches your hardware limits. The developers hold absolutely no liability for drained batteries, financial losses, grid penalties, or hardware degradation.*
