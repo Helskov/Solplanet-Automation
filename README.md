@@ -141,4 +141,4 @@ For the advanced 24-hour visualization, use the code in `forecast_card.yaml` in 
 ---
 
 ## ⚠️ Disclaimer
-*This project is an advanced open-source automation tool provided "as is". It is used entirely at your own risk (på eget ansvar). Solar battery systems involve high voltage, severe safety risks, and expensive hardware. Always ensure your configuration matches your hardware limits. The developers hold absolutely no liability for drained batteries, financial losses, grid penalties, or hardware degradation.*
+*This project is an open-source automation tool provided "as is". It is used entirely at your own risk (på eget ansvar). Solar battery systems involve high voltage, severe safety risks, and expensive hardware. Always ensure your configuration matches your hardware limits. The developers hold absolutely no liability for drained batteries, financial losses, grid penalties, or hardware degradation.*
