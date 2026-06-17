@@ -50,6 +50,7 @@ except (KeyError, ValueError):
 
 MESSAGES = {
     "DA": {
+        "plan_down_to": " (Ned til {soc}%)",
         "start": "🚀 Starter Intelligent Solcellestyring (Hjerne & Planlægger)...",
         "log_path": "📂 Logfilen gemmes her: {path}",
         "wake": "🔄 VÅGNER OG STARTER BEREGNING: {time}",
@@ -103,6 +104,7 @@ MESSAGES = {
         "mem_err": "⚠️ Kunne ikke gemme batteri-erfaring: {e}"
     },
     "EN": {
+        "plan_down_to": " (Down to {soc}%)",
         "start": "🚀 Starting Solplanet Automation (Brain & Planner)...",
         "log_path": "📂 Log file saved at: {path}",
         "wake": "🔄 WAKING UP & CALCULATING: {time}",
@@ -557,6 +559,10 @@ while True:
 
         min_export_price = get_ha_state(SENSOR_MIN_EKSPORT, 'float')
         throttle_aggression = get_ha_state(SENSOR_THROTTLE_AGGRESSION, 'float')
+        throttle_min_soc = get_ha_state("input_number.sol_throttle_min_soc", 'float')
+        if throttle_min_soc <= 0.0:
+            throttle_min_soc = 20.0
+        throttle_hysteresis_target = throttle_min_soc + 3.0
         if throttle_aggression < 0.0:
             throttle_aggression = 0.0
 
@@ -1149,7 +1155,8 @@ while True:
             elif price_now_ex >= total_sell_barrier and price_now_ex >= green_min_sell_price and (battery_soc >= (green_target_soc + salgs_buffer) or (is_currently_selling and battery_soc >= green_target_soc)):
 
                 # Sell surplus down to safe night survival limit using dynamic volume threshold
-                if price_now_ex >= (evening_threshold * 0.98):
+                # Only sell in evening if evening peak is greater than or equal to morning peak
+                if price_now_ex >= (evening_threshold * 0.98) and max_evening_peak >= max_morning_peak:
                     handling = get_msg("smart_sell_evening", soc=int(green_target_soc))
                     target_mode = "Custom"
                     target_discharge = MAX_DISCHARGE_W
@@ -1172,7 +1179,9 @@ while True:
                 cheapest_sell_later = min(future_sell_prices) if future_sell_prices else price_now_ex
 
                 # Check for significant price drop (dynamic value) or hitting safety price
-                expecting_price_drop = (price_now_ex - cheapest_sell_later) > throttle_pris_dyk or cheapest_sell_later < throttle_safety_price
+                # Check for significant price drop (must drop more than user setting, or drop below 0)
+                # Check for significant price drop (must drop more than user setting, or drop below 0), restricted to 06:00 - 12:00
+                expecting_price_drop = (price_now_ex > cheapest_sell_later) and ((price_now_ex - cheapest_sell_later) > throttle_pris_dyk or cheapest_sell_later < 0.0) and (6 <= now.hour <= 12)
 
                 # Calculate pure surplus solar forecast until 17:00
                 expected_surplus_later_kwh = 0.0
@@ -1190,18 +1199,32 @@ while True:
                 missing_to_full_kwh = BATTERY_CAPACITY_KWH * ((100.0 - battery_soc) / 100.0)
                 forecast_allows_throttling = expected_surplus_later_kwh >= (missing_to_full_kwh * 1.1)
 
-                # Vi throttler enten pga forestående prisdyk (og god prognose) ELLER pga forestående sol-peak (clipping)
+                # Check if throttle is currently locked due to low battery
+                is_throttle_paused_soc = False
+                if battery_soc < throttle_min_soc:
+                    is_throttle_paused_soc = True
+                elif battery_soc < throttle_hysteresis_target and "Batteri under grænse" in current_plan_state:
+                    is_throttle_paused_soc = True
+
                 should_throttle = (expecting_price_drop and forecast_allows_throttling) or is_peak_shaving
 
                 if should_throttle:
                     if naked_house_w > pv_w:
-                        # 🔴 SIKKERHEDSNET: Sky for solen eller højt forbrug! Afbryd throttle og kør Self-consumption
+                        # 🔴 SAFETY NET: Cloud cover or high load! Pause throttle and run Self-consumption
                         handling = "🌤️ Sol-Throttling Pauset: Forbrug overstiger sol. Skifter til Self-consumption."
                         target_mode = "Self-consumption"
                         target_charge = 10000
                         target_discharge = MAX_DISCHARGE_W
                         action_id = 1
+                    elif is_throttle_paused_soc:
+                        # 🔴 SAFETY NET: Avoid yo-yo effect. Battery is too low to throttle.
+                        handling = f"🌤️ Sol-Throttling Pauset: Batteri under grænse ({battery_soc:.1f}%). Lader op til {throttle_hysteresis_target:.1f}%..."
+                        target_mode = "Self-consumption"
+                        target_charge = 10000
+                        target_discharge = MAX_DISCHARGE_W
+                        action_id = 1
                     else:
+                        # Safe to proceed: Run throttle via Custom Mode
                         # Alt er trygt: Kør throttle via Custom Mode
                         if is_peak_shaving:
                             handling = f"🌤️ Sol-Throttling (Peak Shaving): Udsætter opladning til 12kW-peak. Limit: {smart_solar_charge_w}W."
@@ -1278,6 +1301,7 @@ while True:
         sim_soc = battery_soc
         sim_soc_list = []
         sim_time_list = []
+        sim_throttle_paused_soc = False
         sim_charge_hours = []
         sim_arbitrage_hours = []
         sim_load_list = []
@@ -1354,7 +1378,8 @@ while True:
 
                 elif sim_soc >= (green_target_soc + salgs_buffer):
                     if hour_max_peak >= total_sell_barrier and hour_max_peak >= green_min_sell_price:
-                        if hour_max_peak >= (evening_threshold * 0.98):
+                        # Prevent simulated evening arbitrage if morning peak is higher
+                        if hour_max_peak >= (evening_threshold * 0.98) and max_evening_peak >= max_morning_peak:
                             is_arbitrage_hour = True
             if is_arbitrage_hour:
                 sim_arbitrage_hours.append(key)
@@ -1420,9 +1445,14 @@ while True:
                         hours_with_solar_left_sim = max(1, 17 - future.hour)
                         ideal_solar_w_sim = (rest_need_now_kwh_sim / hours_with_solar_left_sim) * 1000.0
                         smart_solar_charge_w_sim = int(max(200, min(MAX_CHARGE_W, ideal_solar_w_sim)))
-                    # --------------------------------
 
-                    should_throttle_sim = ((t_price_sell >= throttle_safety_price and expecting_price_drop_sim) or is_peak_shaving_sim) and smart_solar_charge_w_sim < 9000 and sim_soc < 98.0
+                    # Track hysteresis state in simulation
+                    if sim_soc < throttle_min_soc:
+                        sim_throttle_paused_soc = True
+                    elif sim_soc >= throttle_hysteresis_target:
+                        sim_throttle_paused_soc = False
+
+                    should_throttle_sim = (expecting_price_drop_sim or is_peak_shaving_sim) and smart_solar_charge_w_sim < 9000 and sim_soc < 98.0 and not sim_throttle_paused_soc
 
                     if t_price_sell < min_export_price:
                         sim_soc += min(sim_max_soc_charge_per_hour, (net_kwh / BATTERY_CAPACITY_KWH) * 100.0)
@@ -1570,11 +1600,13 @@ while True:
                 end_soc = int(time_soc)
                 if valgt_profil == "Profit Mode":
                     profit = s_price - min_future_buy_price
-                    plan_text = f"{soc_text}{dbg_txt(4)} " + get_msg("plan_profit", profit=profit) + f" (Ned til {end_soc}%)"
+                    plan_text = f"{soc_text}{dbg_txt(4)} " + get_msg("plan_profit", profit=profit) + get_msg("plan_down_to", soc=end_soc)
                 elif 6 <= future.hour <= 11:
-                    plan_text = f"{soc_text}{dbg_txt(4)} " + get_msg("plan_morning") + f" (Ned til {end_soc}%)"
+                    # Dette griber Smart Selvforsyning (Morgen)
+                    plan_text = f"{soc_text}{dbg_txt(4)} " + get_msg("plan_morning") + get_msg("plan_down_to", soc=end_soc)
                 else:
-                    plan_text = f"{soc_text}{dbg_txt(4)} " + get_msg("plan_evening") + f" (Ned til {end_soc}%)"
+                    # Dette griber Smart Selvforsyning (Aften)
+                    plan_text = f"{soc_text}{dbg_txt(4)} " + get_msg("plan_evening") + get_msg("plan_down_to", soc=end_soc)
             elif time_net > 0.0:
                 if s_price < min_export_price:
                     plan_text = f"{soc_text}{dbg_txt(2)} " + get_msg("plan_stop")
@@ -1583,7 +1615,7 @@ while True:
                 elif (t_solar_w > 100 or (6 <= future.hour <= 18)) and sol_faktor >= bruger_sol_faktor:
                     future_sell_prices_sim = [v for k_s, v in sell_dict.items() if future.strftime("%Y-%m-%d") in k_s and int(k_s.split()[-1]) <= 17 and datetime.strptime(k_s, "%Y-%m-%d %H") > future]
                     cheapest_sell_later_sim = min(future_sell_prices_sim) if future_sell_prices_sim else s_price
-                    expecting_price_drop_sim = (s_price - cheapest_sell_later_sim) > throttle_pris_dyk or cheapest_sell_later_sim < throttle_safety_price
+                    expecting_price_drop_sim = (s_price > cheapest_sell_later_sim) and ((s_price - cheapest_sell_later_sim) > throttle_pris_dyk or cheapest_sell_later_sim < 0.0) and (6 <= future.hour <= 12)
 
                     expected_surplus_later_kwh_sim = 0.0
                     for j in range(1, 17 - future.hour):
