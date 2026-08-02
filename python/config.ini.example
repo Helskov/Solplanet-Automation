@@ -13,7 +13,7 @@ VAT_RATE = 1.25
 HA_IP = 192.168.1.212
 HA_PORT = 8123
 # Long-Lived Access Token (Create this in your Home Assistant profile settings)
-HA_TOKEN = INSERT TOKEN HERE
+HA_TOKEN = [INSERT YOUR HA TOKEN HERE]
 TRAINING_DAYS = 14
 
 [Hardware]
@@ -48,6 +48,11 @@ PRICE_SELL = sensor.stromligning_spotprice_ex_vat
 # - Stromligning: binary_sensor.stromligning_tomorrow_available_vat
 # - Energi Data Service: Leave BLANK (Tomorrow's data is fetched directly from the primary sensor)
 PRICE_BUY_TOMORROW = binary_sensor.stromligning_tomorrow_available_vat
+
+# PRICE_SELL_TOMORROW: Used to fetch tomorrow's spot prices (without VAT/tariffs) in advance
+# - Stromligning: Leave BLANK (Tomorrow's spot prices are calculated automatically)
+# - Energi Data Service: Leave BLANK (Tomorrow's data is calculated automatically)
+PRICE_SELL_TOMORROW =
 
 WEATHER_ENTITY = weather.forecast_home
 # WEATHER_TEMP: A dedicated outdoor temperature sensor (e.g., local weather station).
