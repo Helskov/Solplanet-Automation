@@ -19,8 +19,9 @@
 # 6. DIN_INVERTER_WORK_MODE_ENTITET (Eks: select.solplanet_work_mode)
 # 7. DIN_INVERTER_INPUT_POWER_ENTITET (Eks: number.solplanet_schedule_input_power)
 # 8. DIN_INVERTER_OUTPUT_POWER_ENTITET (Eks: number.solplanet_schedule_output_power)
-# 9. DIT_DEVICE_ID_HER (Findes nemmest via: Udviklerværktøjer -> Handlinger ->
-#    Vælg 'solplanet.clear_schedule' -> Vælg din Inverter -> Skift til YAML-tilstand)
+# 9. DIN_INVERTER_SKEMA_SENSOR (Eks: binary_sensor.solplanet_schedule_configured)
+# 10. DIT_DEVICE_ID_HER (Findes nemmest via: Udviklerværktøjer -> Handlinger ->
+#     Vælg 'solplanet.clear_schedule' -> Vælg din Inverter -> Skift til YAML-tilstand)
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
@@ -137,6 +138,11 @@ input_number:
     min: 0
     max: 100
     step: 1
+  sol_throttle_min_soc:
+    name: "Min limit SOC Sol Throttle"
+    min: 0
+    max: 100
+    step: 1
   roed_profit_margin:
     name: "Min. Profit Margin (Rød Profil)"
     min: 0.1
@@ -212,13 +218,13 @@ input_text:
 # ------------------------------------------------------------------------------
 rest_command:
   solplanet_stop_eksport:
-    url: "http://192.168.1.109:8484/setting.cgi"
+    url: "http://DIN_INVERTER_IP_HER:8484/setting.cgi"
     method: POST
     headers:
       content_type: 'application/json'
     payload: '{"device":3,"action":"setmeter","value":{"target":0,"regulate":10,"enb_PF":5,"target_PF":0,"abs":0,"offset":2}}'
   solplanet_tillad_eksport:
-    url: "http://192.168.1.109:8484/setting.cgi"
+    url: "http://DIN_INVERTER_IP_HER:8484/setting.cgi"
     method: POST
     headers:
       content_type: 'application/json'
@@ -251,14 +257,14 @@ automation:
         state: "Manuel (Tidsstyret)"
       - condition: template
         value_template: >
-          {{ states('sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge') | float(0) > states('input_number.batteri_min_soc') | float(10) }}
+          {{ states('DIN_BATTERI_SOC_SENSOR') | float(0) > states('input_number.batteri_min_soc') | float(10) }}
     action:
       - action: input_number.set_value
         target:
           entity_id: input_number.batterisalg_target_soc
         data:
           value: >
-            {% set nu_soc = states('sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge') | float(0) %}
+            {% set nu_soc = states('DIN_BATTERI_SOC_SENSOR') | float(0) %}
             {% set kwh = states('input_number.batterisalg_kwh') | float(0) %}
             {% set min_soc = states('input_number.batteri_min_soc') | float(10) %}
             {{ [nu_soc - (kwh * 5), min_soc] | max | int }}
@@ -273,7 +279,7 @@ automation:
     trigger:
       - platform: template
         value_template: >
-          {{ states('sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge') | float(100) <= states('input_number.batterisalg_target_soc') | float(0) }}
+          {{ states('DIN_BATTERI_SOC_SENSOR') | float(100) <= states('input_number.batterisalg_target_soc') | float(0) }}
         id: "succes"
       - platform: state
         entity_id: input_select.batterisalg_tilstand
@@ -324,22 +330,22 @@ automation:
         entity_id: input_boolean.solcelle_ai_styring_aktiv
         state: "on"
       - condition: state
-        entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+        entity_id: DIN_INVERTER_WORK_MODE_ENTITET
         state: "Custom mode"
       - condition: template
         value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 3 }}"
     action:
       - variables:
-          pv: "{{ states('sensor.solplanet_battery_oe012k60z2550185_pv_power') | float(0) }}"
-          p1_grid: "{{ states('sensor.p1_meter_effekt') | float(0) }}"
-          nuvaerende_ladehastighed: "{{ states('number.solplanet_battery_oe012k60z2550185_schedule_input_power') | float(0) }}"
+          pv: "{{ states('DIN_SOLCELLE_WATT_SENSOR') | float(0) }}"
+          p1_grid: "{{ states('DIT_HUS_FORBRUG_WATT_SENSOR') | float(0) }}"
+          nuvaerende_ladehastighed: "{{ states('DIN_INVERTER_INPUT_POWER_ENTITET') | float(0) }}"
           teoretisk_overskud: "{{ nuvaerende_ladehastighed - p1_grid }}"
           rent_overskud: "{{ [teoretisk_overskud, 0] | max }}"
           ai_max_lade_limit: "{{ state_attr('sensor.solplanet_automation_plan', 'target_battery_input_power') | int(10000) }}"
           tilladt_opladning: "{{ [rent_overskud, ai_max_lade_limit] | min | int }}"
       - action: number.set_value
         target:
-          entity_id: number.solplanet_battery_oe012k60z2550185_schedule_input_power
+          entity_id: DIN_INVERTER_INPUT_POWER_ENTITET
         data:
           value: "{{ tilladt_opladning }}"
 
@@ -349,19 +355,19 @@ automation:
     trigger:
       - platform: template
         value_template: >
-          {{ states('sensor.p1_meter_effekt') | float(0) > 500 and
-             is_state('select.solplanet_battery_oe012k60z2550185_work_mode', 'Custom mode') }}
+          {{ states('DIT_HUS_FORBRUG_WATT_SENSOR') | float(0) > 500 and
+             is_state('DIN_INVERTER_WORK_MODE_ENTITET', 'Custom mode') }}
         for: "00:01:00"
         id: "til_normal"
       - platform: template
         value_template: >
-          {% set pv = states('sensor.solplanet_battery_oe012k60z2550185_pv_power') | float(0) %}
-          {% set grid = states('sensor.p1_meter_effekt') | float(0) %}
-          {% set batt = states('sensor.solplanet_battery_oe012k60z2550185_battery_power') | float(0) %}
+          {% set pv = states('DIN_SOLCELLE_WATT_SENSOR') | float(0) %}
+          {% set grid = states('DIT_HUS_FORBRUG_WATT_SENSOR') | float(0) %}
+          {% set batt = states('DIN_BATTERI_WATT_SENSOR') | float(0) %}
           {% set hus = pv + grid + batt %}
           {% set overskud = pv - hus %}
           {{ overskud > 50 and grid < 100 and
-             is_state('select.solplanet_battery_oe012k60z2550185_work_mode', 'Self-consumption mode') }}
+             is_state('DIN_INVERTER_WORK_MODE_ENTITET', 'Self-consumption mode') }}
         for: "00:01:00"
         id: "til_custom"
     condition:
@@ -378,7 +384,7 @@ automation:
             sequence:
               - action: select.select_option
                 target:
-                  entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+                  entity_id: DIN_INVERTER_WORK_MODE_ENTITET
                 data:
                   option: "Self-consumption mode"
           - conditions:
@@ -387,7 +393,7 @@ automation:
             sequence:
               - action: select.select_option
                 target:
-                  entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+                  entity_id: DIN_INVERTER_WORK_MODE_ENTITET
                 data:
                   option: "Custom mode"
 
@@ -446,13 +452,13 @@ script:
             sequence:
               - variables:
                   batteri_str_kwh: "{{ states('input_number.batteri_kapacitet_kwh') | float(20.0) }}"
-                  soc_sensor: "sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge"
+                  soc_sensor: "DIN_BATTERI_SOC_SENSOR"
                   onsket_kwh: "{{ state_attr('sensor.solplanet_automation_plan', 'target_battery_input_power') | float(0) / 1000 }}"
                   start_soc: "{{ states(soc_sensor) | float(0) }}"
                   target_soc: "{{ start_soc + (onsket_kwh / batteri_str_kwh * 100) }}"
               - action: select.select_option
                 target:
-                  entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+                  entity_id: DIN_INVERTER_WORK_MODE_ENTITET
                 data:
                   option: "Time of use mode"
               - wait_template: "{{ states(soc_sensor) | float(0) >= target_soc }}"
@@ -517,10 +523,10 @@ script:
         description: "Max lade-effekt (W)"
     sequence:
       - condition: template
-        value_template: "{{ states('number.solplanet_battery_oe012k60z2550185_schedule_input_power') | int(-1) != watt | int }}"
+        value_template: "{{ states('DIN_INVERTER_INPUT_POWER_ENTITET') | int(-1) != watt | int }}"
       - action: number.set_value
         target:
-          entity_id: number.solplanet_battery_oe012k60z2550185_schedule_input_power
+          entity_id: DIN_INVERTER_INPUT_POWER_ENTITET
         data:
           value: "{{ watt | int }}"
 
@@ -531,10 +537,10 @@ script:
         description: "Max aflade-effekt (W)"
     sequence:
       - condition: template
-        value_template: "{{ states('number.solplanet_battery_oe012k60z2550185_schedule_output_power') | int(-1) != watt | int }}"
+        value_template: "{{ states('DIN_INVERTER_OUTPUT_POWER_ENTITET') | int(-1) != watt | int }}"
       - action: number.set_value
         target:
-          entity_id: number.solplanet_battery_oe012k60z2550185_schedule_output_power
+          entity_id: DIN_INVERTER_OUTPUT_POWER_ENTITET
         data:
           value: "{{ watt | int }}"
 
@@ -568,16 +574,16 @@ script:
       - condition: template
         value_template: >
           {{ states('input_text.aktivt_inverter_skema') != 'none' or
-             states('select.solplanet_battery_oe012k60z2550185_work_mode') != 'Self-consumption mode' }}
+             states('DIN_INVERTER_WORK_MODE_ENTITET') != 'Self-consumption mode' }}
       - action: select.select_option
         target:
-          entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
+          entity_id: DIN_INVERTER_WORK_MODE_ENTITET
         data:
           option: "Self-consumption mode"
       - action: solplanet.clear_schedule
         continue_on_error: true
         target:
-          device_id: "0639d533a0373a502e902e89058940b3"
+          device_id: "DIT_DEVICE_ID_HER"
         data:
           day: "all"
       - action: input_text.set_value
@@ -592,47 +598,117 @@ script:
       skema_mode:
         example: "charge"
     sequence:
-      - action: select.select_option
-        target:
-          entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
-        data:
-          option: "Custom mode"
-      - delay: "00:00:05"
-      - condition: template
-        value_template: >
-          {{ states('input_text.aktivt_inverter_skema') != skema_mode or
-             (now().timestamp() - as_timestamp(states.input_text.aktivt_inverter_skema.last_changed, 0)) > 10800 }}
       - variables:
           v_mode: "{{ skema_mode | lower }}"
           dag_navn: "{{ ['Mon', 'Tus', 'Wen', 'Thu', 'Fri', 'Sat', 'Sun'][now().weekday()] }}"
-          kalkuleret_duration: "{{ [4, 24 - now().hour] | min }}"
+          kalkuleret_duration: "{{ [1, [4, 24 - now().hour] | min] | max }}"
+          device_inverter: "DIT_DEVICE_ID_HER"
+
+      # TRIN 1: PRE-FLIGHT (Afbryd hvis donglen allerede afvikler det korrekte skema for denne time)
+      - condition: template
+        value_template: >
+          {% set er_custom = is_state('DIN_INVERTER_WORK_MODE_ENTITET', 'Custom mode') %}
+          {% set har_skema = is_state('DIN_INVERTER_SKEMA_SENSOR', 'on') %}
+          {% set skema = state_attr('DIN_INVERTER_SKEMA_SENSOR', 'formatted_schedule') %}
+          {% set dag = ['Mon', 'Tus', 'Wen', 'Thu', 'Fri', 'Sat', 'Sun'][now().weekday()] %}
+          {% set ns = namespace(ok=false) %}
+          {% if har_skema and skema and dag in skema %}
+            {% for s in skema[dag] %}
+              {% set txt = (s | string).replace(' ', '') %}
+              {% if '-' in txt and ('(' ~ v_mode ~ ')') in txt %}
+                {% set p1 = txt.split('-')[0].split(':')[0] | int(-1) %}
+                {% set p2_r = txt.split('-')[1].split(':')[0] | int(-1) %}
+                {% set p2 = 24 if p2_r == 0 else p2_r %}
+                {% if p1 <= now().hour < p2 %}
+                  {% set ns.ok = true %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+          {{ not (er_custom and ns.ok) }}
+
+      # TRIN 2: SKIFT TIL CUSTOM MODE
+      - action: select.select_option
+        target:
+          entity_id: DIN_INVERTER_WORK_MODE_ENTITET
+        data:
+          option: "Custom mode"
+      - delay: "00:00:04"
+
+      # TRIN 3: SLET SKEMA (FORSØG 1)
       - action: solplanet.clear_schedule
         continue_on_error: true
         target:
-          device_id: "0639d533a0373a502e902e89058940b3"
+          device_id: "{{ device_inverter }}"
         data:
           day: "{{ dag_navn }}"
-      - delay: "00:00:10"
-      - action: solplanet.clear_schedule
-        continue_on_error: true
-        target:
-          device_id: "0639d533a0373a502e902e89058940b3"
-        data:
-          day: "{{ dag_navn }}"
-      - delay: "00:00:15"
+      - delay: "00:00:08"
+
+      # TRIN 4: HANDSHAKE-KONTROL (Slet kun igen, hvis den modvilligt stadig har data liggende)
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >
+                  {% set skema = state_attr('DIN_INVERTER_SKEMA_SENSOR', 'formatted_schedule') %}
+                  {% set dag = ['Mon', 'Tus', 'Wen', 'Thu', 'Fri', 'Sat', 'Sun'][now().weekday()] %}
+                  {{ skema and dag in skema and skema[dag] | length > 0 }}
+            sequence:
+              - action: solplanet.clear_schedule
+                continue_on_error: true
+                target:
+                  device_id: "{{ device_inverter }}"
+                data:
+                  day: "{{ dag_navn }}"
+              - delay: "00:00:08"
+
+      # TRIN 5: SKRIV NYT SKEMA
       - action: solplanet.set_schedule_slots
         continue_on_error: true
         target:
-          device_id: "0639d533a0373a502e902e89058940b3"
+          device_id: "{{ device_inverter }}"
         data:
           day: "{{ dag_navn }}"
           start_hour: "{{ now().hour | int }}"
           start_minute: 0
           duration: "{{ kalkuleret_duration | int }}"
           mode: "{{ v_mode }}"
-      - delay: "00:00:10"
+      - delay: "00:00:05"
+
       - action: input_text.set_value
         target:
           entity_id: input_text.aktivt_inverter_skema
         data:
           value: "{{ v_mode }}"
+
+      # TRIN 6: ASYNKRON WATCHDOG (Venter op til 75 sek på at Home Assistant poller de nye data)
+      - wait_template: >
+          {% set har_skema = is_state('DIN_INVERTER_SKEMA_SENSOR', 'on') %}
+          {% set skema = state_attr('DIN_INVERTER_SKEMA_SENSOR', 'formatted_schedule') %}
+          {% set dag = ['Mon', 'Tus', 'Wen', 'Thu', 'Fri', 'Sat', 'Sun'][now().weekday()] %}
+          {% set ns = namespace(ok=false) %}
+          {% if har_skema and skema and dag in skema %}
+            {% for s in skema[dag] %}
+              {% set txt = (s | string).replace(' ', '') %}
+              {% if '-' in txt and ('(' ~ v_mode ~ ')') in txt %}
+                {% set p1 = txt.split('-')[0].split(':')[0] | int(-1) %}
+                {% set p2_r = txt.split('-')[1].split(':')[0] | int(-1) %}
+                {% set p2 = 24 if p2_r == 0 else p2_r %}
+                {% if p1 <= now().hour < p2 %}
+                  {% set ns.ok = true %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+          {{ ns.ok }}
+        timeout: "00:01:15"
+        continue_on_timeout: true
+
+      # TRIN 7: ALARM VED TIMEOUT (Sender notifikation, men rører IKKE det skrevne skema)
+      - condition: template
+        value_template: "{{ not wait.completed }}"
+
+      - action: persistent_notification.create
+        data:
+          title: "⚠️ Inverter Skema Fejl (Timeout)"
+          message: "Efter 75 sekunder har Home Assistant endnu ikke registreret skemaet '{{ v_mode }}' for kl. {{ now().hour }}:00 på {{ dag_navn }}. Hold øje med om ordren reelt fejlede, eller blot er forsinket af integrationen."
+          notification_id: "solplanet_schedule_failure"
