@@ -80,7 +80,7 @@ MESSAGES = {
         "debug_raw_measurements": "⚡ Rå Målinger  -> Sol: {sol:.0f}W | P1 Net: {p1:.0f}W | Batteri: {batt:.0f}W",
         "debug_naked_house": "🏠 NØGENT HUS  -> Beregnet ægte forbrug lige nu: {house:.0f}W",
         "action_sent": "\n📡 --- HOVED-HANDLING SENDT TIL INVERTER: {handling} ---",
-        "forecast_header": "\n🔮 --- DEBUG: KRYSTALKUGLE FOR DE NÆSTE 12 TIMER ---",
+        "forecast_header": "\n🔮 --- DEBUG: KRYSTALKUGLE FOR DE NÆSTE 24 TIMER ---",
         "sleep": "💤 Går i dvale (Beregner fuld AI-strategi igen om 3 minutter)...",
         "err_model": "❌ KRITISK FEJL: Kunne ikke finde 'ml_solcelle_model.pkl'. Har du kørt trænings-scriptet?",
         "err_model_load": "❌ FEJL ved indlæsning af model: {e}",
@@ -134,7 +134,7 @@ MESSAGES = {
         "debug_raw_measurements": "⚡ Raw Sensors   -> Solar: {sol:.0f}W | P1 Grid: {p1:.0f}W | Battery: {batt:.0f}W",
         "debug_naked_house": "🏠 NAKED HOUSE   -> Calc. True Consumption Now: {house:.0f}W",
         "action_sent": "\n📡 --- MAIN ACTION SENT TO INVERTER: {handling} ---",
-        "forecast_header": "\n🔮 --- DEBUG: CRYSTAL BALL FOR NEXT 12 HOURS ---",
+        "forecast_header": "\n🔮 --- DEBUG: CRYSTAL BALL FOR NEXT 24 HOURS ---",
         "sleep": "💤 Entering deep sleep (Recalculating AI strategy in 3 minutes)...",
         "err_model": "❌ CRITICAL ERROR: Could not find 'ml_solcelle_model.pkl'. Did you run the training script?",
         "err_model_load": "❌ ERROR loading model: {e}",
@@ -191,6 +191,7 @@ SENSOR_PV = c_sens.get('PV_POWER', '')
 SENSOR_P1 = c_sens.get('GRID_POWER', '')
 SENSOR_BATT_PWR = c_sens.get('BATTERY_POWER', '')
 SENSOR_INVERTER_MIN_SOC = c_sens.get('INVERTER_MIN_SOC', '')
+SENSOR_PRIS_TOMORROW_EX = c_sens.get('PRICE_SELL_TOMORROW', '')
 
 # Solar Forecasts
 SENSOR_SOL_PRIMARY = c_sens.get('SOLAR_FORECAST_PRIMARY', '')
@@ -315,21 +316,49 @@ def get_actual_temperature():
     attrs = get_ha_attributes(SENSOR_VEJR)
     return attrs.get('temperature', 10.0)
 
-def get_ha_state(entity_id, return_type='float'):
-    url = f"http://{HA_IP}:{HA_PORT}/api/states/{entity_id}"
+HA_STATE_CACHE = {}
+
+def fetch_all_ha_states():
+    global HA_STATE_CACHE
+    url = f"http://{HA_IP}:{HA_PORT}/api/states"
     headers = {"Authorization": f"Bearer {HA_TOKEN}", "content-type": "application/json"}
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200:
-            val = response.json().get('state', '0')
-            if val in ['unknown', 'unavailable', 'None', '']:
-                return 0.0 if return_type == 'float' else "Smart Selvforsyning"
-            return float(val) if return_type == 'float' else val
-    except:
-        pass
-    return 0.0 if return_type == 'float' else "Smart Selvforsyning"
+            states_list = response.json()
+            HA_STATE_CACHE = {item['entity_id']: item for item in states_list}
+            return True
+    except Exception as e:
+        print(f"⚠️ Fejl ved hentning af samlet state cache: {e}")
+    HA_STATE_CACHE = {}
+    return False
+
+def get_ha_state(entity_id, return_type='float', use_cache=True):
+    if use_cache and HA_STATE_CACHE and entity_id in HA_STATE_CACHE:
+        val = HA_STATE_CACHE[entity_id].get('state', '0')
+    else:
+        url = f"http://{HA_IP}:{HA_PORT}/api/states/{entity_id}"
+        headers = {"Authorization": f"Bearer {HA_TOKEN}", "content-type": "application/json"}
+        try:
+            response = requests.get(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                val = response.json().get('state', '0')
+            else:
+                val = '0'
+        except:
+            val = '0'
+
+    if val in ['unknown', 'unavailable', 'None', '']:
+        return 0.0 if return_type == 'float' else "Smart Selvforsyning"
+    try:
+        return float(val) if return_type == 'float' else val
+    except ValueError:
+        return 0.0 if return_type == 'float' else val
 
 def get_ha_attributes(entity_id):
+    if HA_STATE_CACHE and entity_id in HA_STATE_CACHE:
+        return HA_STATE_CACHE[entity_id].get('attributes', {})
+
     url = f"http://{HA_IP}:{HA_PORT}/api/states/{entity_id}"
     headers = {"Authorization": f"Bearer {HA_TOKEN}", "content-type": "application/json"}
     try:
@@ -393,8 +422,8 @@ def fetch_universal_prices(sensor_now, sensors_tomorrow_str):
             # Parse time, handle standard ISO formats, and STRIP timezone (make naive)
             start_time = datetime.fromisoformat(str(time_str).replace('Z', '+00:00')).replace(tzinfo=None)
 
-            # Keep the price only if the hour has not passed yet
-            if start_time >= now.replace(minute=0, second=0, microsecond=0):
+            # Keep the price if it is from today onwards (so we can learn full 24-hour tariffs)
+            if start_time >= now.replace(hour=0, minute=0, second=0, microsecond=0):
                 # Use a normalized string as key so valid tomorrow-data overwrites dummy 0.00 data
                 norm_key = start_time.strftime("%Y-%m-%d %H:%M")
                 unique_prices[norm_key] = item
@@ -481,6 +510,12 @@ print(get_msg("log_path", path=os.path.abspath(LOG_FILE)))
 print(f"☀️ Active Primary Forecast Sensor: {SENSOR_SOL_PRIMARY or 'None (Using Fallbacks Only)'}")
 print(f"🌤️ Active Fallback Forecast Sensors: {RAW_FORECASTS or 'None'}")
 
+# Initialize ML Model variables outside the loop
+ml_model = None
+last_model_mtime = 0.0
+temp_col_name = None
+model_sidst_traenet = "Ukendt"
+
 while True:
     try:
         now = datetime.now()
@@ -488,30 +523,37 @@ while True:
         print(get_msg("wake", time=now.strftime('%Y-%m-%d %H:%M:%S')))
         print(f"===================================================================")
 
-        # --- LOAD ML MODEL ---
+        # --- UPDATE HA STATE CACHE ---
+        print("📥 Henter alle Home Assistant tilstande på én gang (Cache)...")
+        fetch_all_ha_states()
+
+        # --- LOAD ML MODEL IF CHANGED ---
         try:
             model_file = os.path.join(script_dir, 'ml_solcelle_model.pkl')
-
-            # --- NY SPION KODE START ---
-            try:
-                model_mtime = os.path.getmtime(model_file)
+            model_mtime = os.path.getmtime(model_file)
+            
+            if ml_model is None or model_mtime > last_model_mtime:
+                print(f"🔄 Indlæser ML-model (Ændret: {datetime.fromtimestamp(model_mtime).strftime('%Y-%m-%d %H:%M:%S')})...")
+                with open(model_file, 'rb') as f:
+                    ml_model = pickle.load(f)
+                ml_features = ml_model.feature_names_in_
+                temp_col_name = [f for f in ml_features if f not in ['hour', 'month', 'weekday', 'is_weekend']][0]
+                last_model_mtime = model_mtime
                 model_sidst_traenet = datetime.fromtimestamp(model_mtime).strftime("%Y-%m-%d %H:%M:%S")
-            except:
-                model_sidst_traenet = "Ukendt"
-            # --- NY SPION KODE SLUT ---
-
-            with open(model_file, 'rb') as f:
-                ml_model = pickle.load(f)
-            ml_features = ml_model.feature_names_in_
-            temp_col_name = [f for f in ml_features if f not in ['hour', 'weekday', 'is_weekend']][0]
         except FileNotFoundError:
-            print(get_msg("err_model"))
-            time.sleep(60)
-            continue
+            if ml_model is None:
+                print(get_msg("err_model"))
+                time.sleep(60)
+                continue
+            else:
+                print("⚠️ Advarsel: 'ml_solcelle_model.pkl' ikke fundet på disk. Bruger forrige version fra hukommelsen.")
         except Exception as e:
-            print(get_msg("err_model_load", e=e))
-            time.sleep(60)
-            continue
+            if ml_model is None:
+                print(get_msg("err_model_load", e=e))
+                time.sleep(60)
+                continue
+            else:
+                print(f"⚠️ Advarsel: Fejl ved indlæsning af model. Bruger forrige version fra hukommelsen. Fejl: {e}")
 
         # --- FETCH SENSORS FROM HA ---
         current_temp = get_actual_temperature()
@@ -649,8 +691,7 @@ while True:
         buy_dict = build_time_price_dict(buy_raw_data)
 
         # Fetch and parse sell prices (Universal)
-        # Fetch and parse sell prices (Universal)
-        sell_raw_data = fetch_universal_prices(SENSOR_PRIS_NU_EX, "")
+        sell_raw_data = fetch_universal_prices(SENSOR_PRIS_NU_EX, SENSOR_PRIS_TOMORROW_EX)
         sell_dict = build_time_price_dict(sell_raw_data)
 
         # --- NY DYNAMISK FALLBACK MED NESTED TARIFF-SUPPORT ---
@@ -667,11 +708,25 @@ while True:
 
         add_tariff_sum = sum([float(v) for v in eds_add_tariffs.values()]) if isinstance(eds_add_tariffs, dict) else 0.0
 
+        # Calculate implied tariffs from overlapping data (Buy - Sell)
+        implied_tariffs_by_hour = {}
+        for tk, b_price in buy_dict.items():
+            if tk in sell_dict:
+                hr = str(datetime.strptime(tk, "%Y-%m-%d %H").hour)
+                t_val = (float(b_price) / VAT_RATE) - float(sell_dict[tk])
+                implied_tariffs_by_hour[hr] = max(0.0, t_val)
+
         for time_key, buy_price in buy_dict.items():
             if time_key not in sell_dict:
                 hour_str = str(datetime.strptime(time_key, "%Y-%m-%d %H").hour)
-                hour_tariff = float(eds_hourly_tariffs.get(hour_str, 0.0)) if isinstance(eds_hourly_tariffs, dict) else 0.0
-                total_tariff = hour_tariff + add_tariff_sum
+                
+                # Check if we got valid tariff data from EDS attributes
+                if len(eds_hourly_tariffs) > 0 or add_tariff_sum > 0:
+                    hour_tariff = float(eds_hourly_tariffs.get(hour_str, 0.0)) if isinstance(eds_hourly_tariffs, dict) else 0.0
+                    total_tariff = hour_tariff + add_tariff_sum
+                else:
+                    # Use dynamically calculated tariff from today's matching hour
+                    total_tariff = implied_tariffs_by_hour.get(hour_str, 0.0)
 
                 # I DK tillægges tariffer og spotpris FØR momsen beregnes.
                 # For at finde den rene spotpris: (Købspris / moms) - Tariffer
@@ -746,10 +801,10 @@ while True:
             # Sleep for approx 3 minutes, but watch the dashboard trigger button
             for _ in range(36):
                 time.sleep(5)
-                if get_ha_state("input_boolean.trigger_ai_beregning", "text") == "on":
+                if get_ha_state("input_boolean.trigger_ai_beregning", "text", use_cache=False) == "on":
                     print("\n⚡ MANUAL RETRY TRIGGERED FROM DASHBOARD! Attempting to fetch prices again...")
                     try:
-                        requests.post(f"http://{HA_IP}:{HA_PORT}/api/states/input_boolean.trigger_ai_beregning", headers=headers, json={"state": "off"}, timeout=10)
+                        requests.post(f"http://{HA_IP}:{HA_PORT}/api/services/input_boolean/turn_off", headers=headers, json={"entity_id": "input_boolean.trigger_ai_beregning"}, timeout=10)
                     except:
                         pass
                     break
@@ -811,6 +866,29 @@ while True:
 
         solar_expected = sum([v for k, v in solar_dict.items() if k.startswith(now.strftime("%Y-%m-%d")) and int(k.split()[1]) >= now.hour])
 
+        # --- PRE-CALCULATE ML LOAD FORECAST FOR NEXT 48 HOURS (BATCH) ---
+        ml_predictions_w = {}
+        if ml_model is not None:
+            future_hours_data = []
+            future_keys = []
+            for i in range(1, 49):
+                future = now + timedelta(hours=i)
+                key = future.strftime("%Y-%m-%d %H")
+                t_temp = weather_dict.get(key, 10.0)
+                future_hours_data.append({
+                    'hour': future.hour,
+                    'month': future.month,
+                    'weekday': future.weekday(),
+                    'is_weekend': 1 if future.weekday() >= 5 else 0,
+                    temp_col_name: t_temp
+                })
+                future_keys.append(key)
+            
+            df_future = pd.DataFrame(future_hours_data)
+            preds = ml_model.predict(df_future)
+            for k, p in zip(future_keys, preds):
+                ml_predictions_w[k] = p
+
         # --- CONSUMPTION FORECAST ---
         load_night_w = 0.0
         load_day_w = 0.0
@@ -830,8 +908,7 @@ while True:
             t_solar = solar_dict.get(key, 0.0) * 1000.0
             t_temp = weather_dict.get(key, 10.0)
 
-            sim_data = pd.DataFrame({'hour': [future.hour], 'weekday': [future.weekday()], 'is_weekend': [1 if future.weekday() >= 5 else 0], temp_col_name: [t_temp]})
-            t_load = ml_model.predict(sim_data)[0]
+            t_load = ml_predictions_w.get(key, 0.0)
 
             if future <= morning_time:
                 load_night_w += t_load
@@ -979,8 +1056,8 @@ while True:
             load_to_17_w = 0.0
             for i in range(17 - now.hour):
                 future = now + timedelta(hours=i)
-                sim_data_temp = pd.DataFrame({'hour': [future.hour], 'weekday': [future.weekday()], 'is_weekend': [1 if future.weekday() >= 5 else 0], temp_col_name: [weather_dict.get(future.strftime("%Y-%m-%d %H"), 10.0)]})
-                load_to_17_w += ml_model.predict(sim_data_temp)[0]
+                key_temp = future.strftime("%Y-%m-%d %H")
+                load_to_17_w += ml_predictions_w.get(key_temp, 0.0)
 
             expected_kwh_at_17 = min(BATTERY_CAPACITY_KWH, max(0.0, (battery_soc / 100.0) * BATTERY_CAPACITY_KWH + solar_to_17_kwh - (load_to_17_w / 1000.0)))
             solar_evening_kwh = sum([v for k, v in solar_dict.items() if k.startswith(now.strftime("%Y-%m-%d")) and 17 <= int(k.split()[1]) < 21])
@@ -989,8 +1066,8 @@ while True:
             for i in range(17, 21):
                 if i <= now.hour: continue
                 future = now.replace(hour=i, minute=0, second=0, microsecond=0)
-                sim_data_temp = pd.DataFrame({'hour': [future.hour], 'weekday': [future.weekday()], 'is_weekend': [1 if future.weekday() >= 5 else 0], temp_col_name: [weather_dict.get(future.strftime("%Y-%m-%d %H"), 10.0)]})
-                load_evening_w += ml_model.predict(sim_data_temp)[0]
+                key_temp = future.strftime("%Y-%m-%d %H")
+                load_evening_w += ml_predictions_w.get(key_temp, 0.0)
 
             min_reserve_kwh = (min_soc_val / 100.0) * BATTERY_CAPACITY_KWH
             missing_for_evening_kwh = max(0.0, (load_evening_w / 1000.0) - solar_evening_kwh) - (expected_kwh_at_17 - min_reserve_kwh)
@@ -1190,8 +1267,7 @@ while True:
                     key_f = future_hour.strftime("%Y-%m-%d %H")
                     sol_f = solar_dict.get(key_f, 0.0)
 
-                    sim_data_f = pd.DataFrame({'hour': [future_hour.hour], 'weekday': [future_hour.weekday()], 'is_weekend': [1 if future_hour.weekday() >= 5 else 0], temp_col_name: [weather_dict.get(key_f, 10.0)]})
-                    load_f_w = ml_model.predict(sim_data_f)[0]
+                    load_f_w = ml_predictions_w.get(key_f, 0.0)
 
                     surplus_f = max(0.0, sol_f - (load_f_w / 1000.0))
                     expected_surplus_later_kwh += surplus_f
@@ -1321,8 +1397,7 @@ while True:
             sim_max_charge_w = find_charge_experience(battery_experience_now, temp_guess, sim_soc)
             sim_max_soc_charge_per_hour = ((sim_max_charge_w / 1000.0) / BATTERY_CAPACITY_KWH) * 100.0
 
-            sim_data = pd.DataFrame({'hour': [future.hour], 'weekday': [future.weekday()], 'is_weekend': [1 if future.weekday() >= 5 else 0], temp_col_name: [temp_guess]})
-            load_kwh = ml_model.predict(sim_data)[0] / 1000.0
+            load_kwh = ml_predictions_w.get(key, 0.0) / 1000.0
             sim_load_list.append(load_kwh * 1000.0)
 
             net_kwh = solar_kwh - load_kwh
@@ -1559,7 +1634,7 @@ while True:
 
         print(get_msg("forecast_header"))
 
-        for i in range(1, 13):
+        for i in range(1, 25):
             future = now + timedelta(hours=i)
             key = future.strftime("%Y-%m-%d %H")
             b_price = buy_dict.get(key, 0.0)
@@ -1623,8 +1698,7 @@ while True:
                         key_f_sim = future_hour_sim.strftime("%Y-%m-%d %H")
                         sol_f_sim = solar_dict.get(key_f_sim, 0.0)
 
-                        sim_data_f_sim = pd.DataFrame({'hour': [future_hour_sim.hour], 'weekday': [future_hour_sim.weekday()], 'is_weekend': [1 if future_hour_sim.weekday() >= 5 else 0], temp_col_name: [weather_dict.get(key_f_sim, 10.0)]})
-                        load_f_w_sim = ml_model.predict(sim_data_f_sim)[0]
+                        load_f_w_sim = ml_predictions_w.get(key_f_sim, 0.0)
 
                         surplus_f_sim = max(0.0, sol_f_sim - (load_f_w_sim / 1000.0))
                         expected_surplus_later_kwh_sim += surplus_f_sim
@@ -1689,10 +1763,10 @@ while True:
         # Sover i ca. 3 minutter totalt (36 * 5 sekunder), men kigger på knappen konstant
         for _ in range(36):
             time.sleep(5)
-            if get_ha_state("input_boolean.trigger_ai_beregning", "text") == "on":
+            if get_ha_state("input_boolean.trigger_ai_beregning", "text", use_cache=False) == "on":
                 print("\n⚡ MANUEL GENBEREGNING AKTIVERET FRA DASHBOARD! Vågner øjeblikkeligt...")
                 try:
-                    requests.post(f"http://{HA_IP}:{HA_PORT}/api/states/input_boolean.trigger_ai_beregning", headers=headers, json={"state": "off"}, timeout=10)
+                    requests.post(f"http://{HA_IP}:{HA_PORT}/api/services/input_boolean/turn_off", headers=headers, json={"entity_id": "input_boolean.trigger_ai_beregning"}, timeout=10)
                 except:
                     pass
                 break # Bryder loopet og starter forfra med det samme
