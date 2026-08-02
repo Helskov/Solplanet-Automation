@@ -68,103 +68,94 @@ TEMP_SENSOR = config['Sensors_Core']['WEATHER_TEMP']
 print(f"🧠 Solplanet Automation: Training Engine starting...")
 print(f"⏳ Fetching last {DAYS} days of data from Home Assistant at {HA_IP}...")
 
-def fetch_data(measurement, entity_id, days=DAYS):
-    """Fetches data from Home Assistant History REST API with explicit UTC timestamp formatting."""
+def fetch_all_data(entity_ids, days=DAYS):
+    """Fetches data for multiple entities from HA History API in one batch request."""
     import urllib.parse
-
-    # Calculate start time in UTC and format it cleanly (Python 3.12+ compliant)
     start_utc = datetime.now(timezone.utc) - timedelta(days=days)
     start_time_str = start_utc.replace(microsecond=0).isoformat()
     encoded_start = urllib.parse.quote(start_time_str)
 
-    # Calculate end time in UTC (Right now)
     end_utc = datetime.now(timezone.utc)
     end_time_str = end_utc.replace(microsecond=0).isoformat()
     encoded_end = urllib.parse.quote(end_time_str)
 
-    # URL encode both timestamps and add 'end_time' parameter to override HA's 1-day default
-    url = f"http://{HA_IP}:{HA_PORT}/api/history/period/{encoded_start}?end_time={encoded_end}&filter_entity_id={entity_id}&minimal_response=1"
+    # Filter empty strings
+    entity_ids = [e for e in entity_ids if e]
+    if not entity_ids:
+        return {}
+
+    filter_str = ",".join(entity_ids)
+    url = f"http://{HA_IP}:{HA_PORT}/api/history/period/{encoded_start}?end_time={encoded_end}&filter_entity_id={filter_str}&minimal_response=1"
 
     headers = {
         "Authorization": f"Bearer {HA_TOKEN}",
         "content-type": "application/json"
     }
 
+    dfs = {}
     try:
-        response = requests.get(url, headers=headers, timeout=60)
+        response = requests.get(url, headers=headers, timeout=120)
 
         if response.status_code != 200:
-            print(f"⚠️ API Error for {entity_id}: HTTP {response.status_code} - Check your HA_TOKEN or HA_IP.")
-            return pd.DataFrame()
+            print(f"⚠️ API Error: HTTP {response.status_code} - Check your HA_TOKEN or HA_IP.")
+            return dfs
 
         data = response.json()
-        if not data or len(data) == 0 or len(data[0]) == 0:
-            print(f"ℹ️ Connected to HA, but historical database returned 0 rows for {entity_id} over the last {days} days.")
-            return pd.DataFrame()
-
-        points = data[0]
-        print(f"📥 Successfully retrieved {len(points)} raw data points from HA for {entity_id}")
-
-        records = []
-        for p in points:
-            state = p.get('state')
-            if state is None or state in ['unknown', 'unavailable', 'None', '']:
+        
+        for points in data:
+            if not points:
                 continue
-            try:
-                val = float(state)
-                # FIX: Fanger både standard og minimal-response tidsstempler
-                t_str = p.get('last_updated') or p.get('last_changed')
-
-                if not t_str:
+            
+            ent_id = points[0].get('entity_id')
+            if not ent_id:
+                continue
+                
+            records = []
+            for p in points:
+                state = p.get('state')
+                if state is None or state in ['unknown', 'unavailable', 'None', '']:
+                    continue
+                try:
+                    val = float(state)
+                    t_str = p.get('last_updated') or p.get('last_changed')
+                    if not t_str:
+                        continue
+                    records.append({'time': t_str, 'value': val})
+                except ValueError:
                     continue
 
-                records.append({'time': t_str, 'value': val})
-            except ValueError:
+            if not records:
+                dfs[ent_id] = pd.DataFrame()
                 continue
 
-        if not records:
-            return pd.DataFrame()
+            df = pd.DataFrame(records)
+            df['time'] = pd.to_datetime(df['time'], format='mixed', utc=True).dt.tz_convert('Europe/Copenhagen').dt.tz_localize(None)
+            df.set_index('time', inplace=True)
+            df.sort_index(inplace=True)
+            df = df[~df.index.duplicated(keep='last')]
+            df_min = df.resample('1min').mean()
+            df_min_filled = df_min.ffill(limit=120).fillna(0)
+            df_hour = df_min_filled.resample('1h').mean()
+            df_hour.rename(columns={'value': ent_id}, inplace=True)
+            dfs[ent_id] = df_hour
 
-        df = pd.DataFrame(records)
-        df['time'] = pd.to_datetime(df['time'], format='mixed', utc=True).dt.tz_convert('Europe/Copenhagen').dt.tz_localize(None)
-        df.set_index('time', inplace=True)
-        df.sort_index(inplace=True)
-
-        # Drop duplicate timestamps to ensure a clean starting baseline
-        df = df[~df.index.duplicated(keep='last')]
-
-        # Resample to a clean 1-minute grid first to force perfect monotonicity
-        df_min = df.resample('1min').mean()
-
-        # Now safely forward-fill the empty gaps up to 2 hours (120 minutes) on the clean grid
-        df_min_filled = df_min.ffill(limit=120).fillna(0)
-
-        # Downsample to 1-hour averages for the ML trainer
-        df_hour = df_min_filled.resample('1h').mean()
-        df_hour.rename(columns={'value': entity_id}, inplace=True)
-        return df_hour
+        return dfs
 
     except Exception as e:
-        print(f"❌ Critical exception fetching data for {entity_id}: {e}")
-        return pd.DataFrame()
+        print(f"❌ Critical exception fetching data: {e}")
+        return dfs
 
 # --- DATA GATHERING ---
 print("📥 Gathering sensor history...")
-df_pv = fetch_data('W', PV_SENSOR)
-df_grid = fetch_data('W', GRID_SENSOR)
-df_batt = fetch_data('W', BATT_SENSOR)
-df_temp = fetch_data('°C', TEMP_SENSOR)
+all_entities = list(set([PV_SENSOR, GRID_SENSOR, BATT_SENSOR, TEMP_SENSOR] + EV_SENSORS))
+fetched_dfs = fetch_all_data(all_entities)
 
-# Gather EV data - request exact unit from InfluxDB
-ev_dfs = []
+df_pv = fetched_dfs.get(PV_SENSOR, pd.DataFrame())
+df_grid = fetched_dfs.get(GRID_SENSOR, pd.DataFrame())
+df_batt = fetched_dfs.get(BATT_SENSOR, pd.DataFrame())
+df_temp = fetched_dfs.get(TEMP_SENSOR, pd.DataFrame())
 
-# Fetch chargers in W
-for s in EV_SENSORS_W:
-    ev_dfs.append(fetch_data('W', s))
-
-# Fetch chargers in kW
-for s in EV_SENSORS_KW:
-    ev_dfs.append(fetch_data('kW', s))
+ev_dfs = [fetched_dfs.get(s, pd.DataFrame()) for s in EV_SENSORS if s in fetched_dfs]
 
 # --- DATA CLEANING & MERGING ---
 # Filter out empty DataFrames from ev_dfs before merging
@@ -257,10 +248,11 @@ df['naked_load'] = (df['total_load'] - df['total_ev_w']).clip(lower=0)
 
 # Features for Machine Learning (Must be kept)
 df['hour'] = df.index.hour
+df['month'] = df.index.month
 df['weekday'] = df.index.weekday
 df['is_weekend'] = df['weekday'].apply(lambda x: 1 if x >= 5 else 0)
 
-X = df[['hour', 'weekday', 'is_weekend', TEMP_SENSOR]]
+X = df[['hour', 'month', 'weekday', 'is_weekend', TEMP_SENSOR]]
 y = df['naked_load']
 
 print(f"🏗️ Training brain on {len(df)} hours of house history...")
