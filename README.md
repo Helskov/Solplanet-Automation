@@ -126,6 +126,8 @@ sudo systemctl start solplanet.service
 ```
 *(You can monitor the live logs anytime with: `journalctl -u solplanet.service -f`)*
 
+You should see a terminal out similar to Termialoutput.png in the [/assets](./assets) folder
+
 ---
 
 ## 📊 Dashboard & Visualization
