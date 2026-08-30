@@ -9,6 +9,8 @@ Use this at your own risk
 
 Unlike simple "charge-at-night" scripts, this system calculates the **Marginal Cost of Energy** (battery degradation + replacement cost) to ensure that every charge and discharge cycle is financially profitable.
 
+For Screenshots. See folder /Assets
+
 ## 🚀 Key Features
 
 - **Machine Learning Forecasts:** Predicts your "naked" house load (excluding EVs) based on history, weather, and day-of-the-week patterns directly from Home Assistant's built-in database (No InfluxDB required!).
