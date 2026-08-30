@@ -9,7 +9,7 @@ Use this at your own risk
 
 Unlike simple "charge-at-night" scripts, this system calculates the **Marginal Cost of Energy** (battery degradation + replacement cost) to ensure that every charge and discharge cycle is financially profitable.
 
-For Screenshots. See folder [/Assets](./Assets)
+For Screenshots. See folder [/assets](./assets)
 
 ## 🚀 Key Features
 
