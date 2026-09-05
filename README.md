@@ -5,6 +5,10 @@ Solplanet Automation energy management system for Home Assistant. It uses **Mach
 Project is my personal project i just chooses to share with other. 
 I have only testet with my own Solplanet Hybrid Inverter ASW12KH-T3
 
+I have and will only test with Danish conditions. It will probaly 
+be very easy to modify to your country, as only prices needs to be adjusted
+if they use a different format than currently supported in the script. 
+
 Use this at your own risk
 
 Unlike simple "charge-at-night" scripts, this system calculates the **Marginal Cost of Energy** (battery degradation + replacement cost) to ensure that every charge and discharge cycle is financially profitable.
@@ -156,5 +160,15 @@ For the advanced 24-hour visualization, use the code in `forecast_card.yaml` in 
 
 ---
 
+## Versions EN
+* 1.0 Initial upload
+* 1.1 Grid Charging & Peak Tariff Optimization:
+  - Fixed rolling delay bug preventing grid charge when solar forecast is low.
+  - Separated night charging (23–06) and afternoon tariff-buster (11–17) logic.
+  - Fixed kWh unit scaling bug in ML consumption calculation.
+  - Lowered price spread threshold for winter tariff protection (Oct–Mar).
+  - Aligned crystal ball simulation directly with inverter dispatch actions.
+
+---
 ## ⚠️ Disclaimer
 *This project is an advanced open-source automation tool provided "as is". It is used entirely at your own risk (på eget ansvar). Solar battery systems involve high voltage, severe safety risks, and expensive hardware. Always ensure your configuration matches your hardware limits. The developers hold absolutely no liability for drained batteries, financial losses, grid penalties, or hardware degradation.*
