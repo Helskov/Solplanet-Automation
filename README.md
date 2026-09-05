@@ -23,6 +23,7 @@ For Screenshots. See folder [/assets](./assets)
 - **Degradation Awareness:** Calculates battery wear-and-tear in real-time (**DKK/kWh**) to prevent "cycling for pennies."
 - **Intelligent Battery Export & Home Protection (Arbitrage):** Automatically discharges stored battery power back to the grid during high-price spikes, but only when the market price guarantees a genuine financial profit after degradation. Crucially, the system calculates a dynamic target reserve, ensuring the battery never over-sells and always retains enough capacity to fully cover your own household consumption during morning and evening peaks.
 - **Solar Throttling:** Intelligently sells solar power before price drops to maximize ROI.
+- **Automated Severe Weather Protection:** Continuously monitors your local weather forecast for severe conditions (such as configurable high wind gusts, official meteorological alerts, or specific weather triggers). If severe weather is detected, the system automatically shifts to *Backup Mode*, raises the battery state-of-charge (SOC) target to ensure resilience against power outages, and seamlessly rolls back to normal operation once the weather has cleared.
 - **Dynamic Tariff-Buster:** Automatically pre-charges the battery from the grid before expensive peak hours.
 - **Smart Profiles:** Choose between *Smart Self-Consumption*, *Backup Mode*, or *Aggressive Profit (Arbitrage)*.
 - **Multi-Language Support:** supports English (EN) and Danish (DA) 
@@ -162,12 +163,13 @@ For the advanced 24-hour visualization, use the code in `forecast_card.yaml` in 
 
 ## Versions EN
 * 1.0 Initial upload
-* 1.1 Grid Charging & Peak Tariff Optimization:
+* 1.1 Automated Weather Protection, Grid Charging & Peak Tariff Optimization:
+  - Added automated severe weather protection to monitor forecasts, switch to Backup Mode during severe weather events, and safeguard household power.
   - Fixed rolling delay bug preventing grid charge when solar forecast is low.
   - Separated night charging (23–06) and afternoon tariff-buster (11–17) logic.
   - Fixed kWh unit scaling bug in ML consumption calculation.
   - Lowered price spread threshold for winter tariff protection (Oct–Mar).
-  - Aligned crystal ball simulation directly with inverter dispatch actions.
+
 
 ---
 ## ⚠️ Disclaimer
