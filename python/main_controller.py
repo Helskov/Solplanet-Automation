@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 import time
 import requests
 from datetime import datetime, timedelta
@@ -229,6 +229,64 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_FILE = os.path.join(project_root, "ai_solcelle_historik.csv")
 BATTERY_EXP_FILE = os.path.join(project_root, 'battery_experience.json')
 PROFIT_FILE = os.path.join(project_root, 'ai_profit.json')
+ROLLING_LOG_FILE = os.path.join(project_root, 'ai_rolling_48h.json')
+WEATHER_STATE_FILE = os.path.join(project_root, 'ai_weather_backup_state.json')
+
+def load_rolling_log():
+    if os.path.exists(ROLLING_LOG_FILE):
+        try:
+            with open(ROLLING_LOG_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "history" in data and "planned_schedule" in data:
+                    return data
+        except Exception as e:
+            print(f"⚠️ Fejl ved indlæsning af {ROLLING_LOG_FILE}: {e}")
+    return {"planned_schedule": {}, "history": {}}
+
+def save_rolling_log(data):
+    try:
+        with open(ROLLING_LOG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Fejl ved gemning af {ROLLING_LOG_FILE}: {e}")
+
+def backfill_rolling_log_from_csv(rolling_data, now):
+    if not os.path.exists(LOG_FILE):
+        return rolling_data
+    try:
+        df = pd.read_csv(LOG_FILE)
+        if df.empty or 'timestamp' not in df.columns:
+            return rolling_data
+        df['dt'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        df = df.dropna(subset=['dt'])
+        cutoff = now - timedelta(hours=48)
+        recent_df = df[df['dt'] >= cutoff].copy()
+        if recent_df.empty:
+            return rolling_data
+        
+        recent_df['hour_key'] = recent_df['dt'].dt.strftime('%Y-%m-%d %H')
+        grouped = recent_df.groupby('hour_key').last().reset_index()
+        
+        for _, row in grouped.iterrows():
+            hk = str(row['hour_key'])
+            if hk not in rolling_data["history"]:
+                rolling_data["history"][hk] = {
+                    "hour_key": hk,
+                    "timestamp": str(row['timestamp']),
+                    "pris_koeb_inkl_moms": round(float(row.get('pris_koeb_inkl_moms', 0.0)), 2),
+                    "pris_salg_ex_moms": round(float(row.get('pris_salg_ex_moms', 0.0)), 2),
+                    "batteri_soc": round(float(row.get('batteri_soc', 0.0)), 1),
+                    "sol_w": int(row.get('pv_produktion_nu_w', row.get('sol_prognose_nu_w', 0.0))),
+                    "forbrug_w": int(row.get('hus_forbrug_nu_w', 0.0)),
+                    "action_id": int(row.get('action_id', 1)),
+                    "target_mode": str(row.get('target_mode', 'Self-consumption')),
+                    "target_charge_w": int(row.get('target_charge_w', 0)),
+                    "beslutning_tekst": str(row.get('beslutning_tekst', '')),
+                    "tidligere_planlagt": "Ukendt (før opdatering)"
+                }
+    except Exception as e:
+        print(f"⚠️ Kunne ikke backfille historik fra CSV: {e}")
+    return rolling_data
 
 def load_ai_profit():
     if os.path.exists(PROFIT_FILE):
@@ -309,6 +367,122 @@ def save_to_csv(data):
 # =====================================================================
 # HELPER FUNCTIONS (API)
 # =====================================================================
+def set_ha_entity_value(domain, service, entity_id, param_name, value):
+    """Sender et servicekald til Home Assistant REST API."""
+    url = f"http://{HA_IP}:{HA_PORT}/api/services/{domain}/{service}"
+    headers = {"Authorization": f"Bearer {HA_TOKEN}", "content-type": "application/json"}
+    payload = {"entity_id": entity_id, param_name: value}
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=10)
+        return res.status_code == 200
+    except Exception as e:
+        print(f"⚠️ Fejl ved opdatering af {entity_id}: {e}")
+        return False
+
+def load_weather_backup_state():
+    """Henter information om, hvorvidt vejret har overstyret profilen."""
+    if os.path.exists(WEATHER_STATE_FILE):
+        try:
+            with open(WEATHER_STATE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+def save_weather_backup_state(data):
+    """Gemmer den oprindelige profil forud for uvejr."""
+    try:
+        with open(WEATHER_STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Fejl ved gemning af vejr-tilstand: {e}")
+
+def clear_weather_backup_state():
+    """Fjerner vejr-overstyringsfilen, når vejret normaliseres."""
+    if os.path.exists(WEATHER_STATE_FILE):
+        try:
+            os.remove(WEATHER_STATE_FILE)
+        except Exception:
+            pass
+
+def evaluate_severe_weather(forecasts, weather_attrs, config_obj):
+    """
+    Evaluerer de næste timer ud fra de aktiverede triggers.
+    En værdi der er tom, 'false' eller 'nej' deaktiverer automatisk triggeren.
+    """
+    if 'Emergency_Backup' not in config_obj:
+        return False, "", 99
+
+    sec = config_obj['Emergency_Backup']
+    if not sec.getboolean('AUTO_WEATHER_BACKUP', False):
+        return False, "", 99
+
+    try:
+        hours_ahead = int(sec.get('MONITOR_HOURS_AHEAD', 12))
+    except ValueError:
+        hours_ahead = 12
+
+    def is_active(key):
+        val = sec.get(key, '').strip().lower()
+        return val in ['true', '1', 'yes', 'ja', 'on']
+
+    wind_raw = sec.get('TRIGGER_WIND_GUST_MS', '').strip()
+    trigger_wind = float(wind_raw) if wind_raw else None
+    
+    trigger_exceptional = is_active('TRIGGER_ON_EXCEPTIONAL')
+    trigger_thunder = is_active('TRIGGER_ON_THUNDER')
+    trigger_snow = is_active('TRIGGER_ON_HEAVY_SNOW')
+    trigger_pouring = is_active('TRIGGER_ON_POURING')
+    weather_debug = is_active('WEATHER_DEBUG')
+
+    wind_unit = weather_attrs.get('wind_speed_unit', 'km/h').lower()
+    now_dt = datetime.now()
+    future_limit = now_dt + timedelta(hours=hours_ahead)
+
+    if weather_debug:
+        print(f"🔍 [VEJR-DEBUG] Analyserer {len(forecasts)} prognose-punkter (Enhed: {wind_unit}, Vind-trigger: {trigger_wind} m/s)...")
+
+    for idx, f in enumerate(forecasts):
+        t_str = f.get('datetime') or f.get('start')
+        if not t_str:
+            continue
+        try:
+            f_time = datetime.fromisoformat(str(t_str).replace('Z', '+00:00')).replace(tzinfo=None)
+        except Exception:
+            continue
+
+        if f_time < now_dt:
+            continue
+        if f_time > future_limit:
+            break
+
+        cond = str(f.get('condition', '')).lower()
+        
+        raw_speed = float(f.get('wind_speed', 0.0))
+        raw_gust = float(f.get('wind_gust_speed', raw_speed))
+        if 'km' in wind_unit:
+            gust_ms = raw_gust / 3.6
+            speed_ms = raw_speed / 3.6
+        else:
+            gust_ms = raw_gust
+            speed_ms = raw_speed
+
+        if weather_debug:
+            print(f"  Tid: {f_time.strftime('%H:00')} | Cond: {cond:<15} | Vind: {speed_ms:.1f} m/s | Gust: {gust_ms:.1f} m/s")
+
+        if trigger_wind is not None and gust_ms >= trigger_wind:
+            return True, f"Vindstød: {gust_ms:.1f} m/s @ {f_time.strftime('%H:00')}", idx + 1
+        elif trigger_exceptional and cond == 'exceptional':
+            return True, f"Farevarsel ('exceptional') @ {f_time.strftime('%H:00')}", idx + 1
+        elif trigger_thunder and cond in ['lightning', 'lightning-rainy']:
+            return True, f"Tordenvejr ('{cond}') @ {f_time.strftime('%H:00')}", idx + 1
+        elif trigger_snow and cond in ['snowy-heavy', 'snowy-rainy']:
+            return True, f"Kraftig sne ('{cond}') @ {f_time.strftime('%H:00')}", idx + 1
+        elif trigger_pouring and cond == 'pouring':
+            return True, f"Skybrud ('pouring') @ {f_time.strftime('%H:00')}", idx + 1
+
+    return False, "", 0
+
 def get_actual_temperature():
     val = get_ha_state(SENSOR_UDE_TEMP, 'float')
     if val != 0.0:
@@ -489,13 +663,14 @@ def build_weather_dict(forecasts):
 
 def get_max_peak_in_window(current_now, hours_ahead, price_dict):
     """Finds the maximum peak price within a time window using the normalized price dictionary"""
-    future_limit = current_now + timedelta(hours=hours_ahead)
+    start_hour = current_now.replace(minute=0, second=0, microsecond=0)
+    future_limit = start_hour + timedelta(hours=hours_ahead)
     relevant_prices = []
 
     for time_str, price in price_dict.items():
         try:
             start_dt = datetime.strptime(time_str, "%Y-%m-%d %H")
-            if current_now <= start_dt < future_limit:
+            if start_hour <= start_dt < future_limit:
                 relevant_prices.append(float(price))
         except:
             pass
@@ -519,6 +694,10 @@ model_sidst_traenet = "Ukendt"
 while True:
     try:
         now = datetime.now()
+        current_hour = now.replace(minute=0, second=0, microsecond=0)
+        rolling_data = load_rolling_log()
+        if not rolling_data.get("history"):
+            rolling_data = backfill_rolling_log_from_csv(rolling_data, now)
         print(f"\n===================================================================")
         print(get_msg("wake", time=now.strftime('%Y-%m-%d %H:%M:%S')))
         print(f"===================================================================")
@@ -586,9 +765,21 @@ while True:
 
         software_min_soc = get_ha_state(SENSOR_MIN_SOC, 'float')
         hardware_min_soc = get_ha_state(SENSOR_INVERTER_MIN_SOC, 'float')
+
+        # 1:1 Synkronisering: Hvis HA-skyderen ændres, opdateres inverterens hardware-register
+        if software_min_soc > 0.0 and SENSOR_INVERTER_MIN_SOC:
+            if abs(software_min_soc - hardware_min_soc) >= 1.0:
+                print(f"🔄 Synkroniserer Inverter SOC: Hardware ({hardware_min_soc}%) -> Software ({software_min_soc}%)")
+                if set_ha_entity_value("number", "set_value", SENSOR_INVERTER_MIN_SOC, "value", int(software_min_soc)):
+                    hardware_min_soc = software_min_soc
+
         min_soc_val = max(software_min_soc, hardware_min_soc)
         if min_soc_val <= 0.0:
-            min_soc_val = 10.0
+            min_soc_val = 15.0
+
+        min_soc_val = max(software_min_soc, hardware_min_soc)
+        if min_soc_val <= 0.0:
+            min_soc_val = 15.0
         # --- LÆS DYNAMISK BUFFER ---
         salgs_buffer = get_ha_state(SENSOR_SALGS_BUFFER, 'float')
         if salgs_buffer <= 0.0:
@@ -743,6 +934,34 @@ while True:
 
         forecasts_list = get_weather_forecast()
         weather_dict = build_weather_dict(forecasts_list)
+
+        # --- AUTOMATISK UVEJRS-OVERVÅGNING & BACKUP OVERSTYRING ---
+        weather_attrs = get_ha_attributes(SENSOR_VEJR)
+        storm_active, storm_reason, _ = evaluate_severe_weather(forecasts_list, weather_attrs, config)
+        saved_weather_state = load_weather_backup_state()
+
+        if storm_active:
+            storm_target = float(config['Emergency_Backup'].get('WEATHER_TARGET_SOC', 90.0))
+            if valgt_profil != "Backup Mode":
+                print(f"🚨 UVEJR VARSLET: {storm_reason}! Skifter til Backup Mode...")
+                save_weather_backup_state({
+                    "original_profile": valgt_profil,
+                    "activated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
+                    "reason": storm_reason
+                })
+                set_ha_entity_value("input_select", "select_option", SENSOR_PROFIL, "option", "Backup Mode")
+                valgt_profil = "Backup Mode"
+
+            # Tving minimums-SOC op på uvejrsmålet under alarmen
+            min_soc_val = max(min_soc_val, storm_target)
+
+        elif saved_weather_state is not None:
+            # Uvejret er drevet over (og er ikke varslet i overvågningsvinduet)
+            orig_prof = saved_weather_state.get("original_profile", "Smart Selvforsyning")
+            print(f"🌤️ Uvejr drevet over. Ruller automatisk tilbage til: {orig_prof}")
+            set_ha_entity_value("input_select", "select_option", SENSOR_PROFIL, "option", orig_prof)
+            valgt_profil = orig_prof
+            clear_weather_backup_state()
 
         # =====================================================================
         # API SANITY CHECK (BLACKOUT GUARD)
@@ -924,8 +1143,18 @@ while True:
         solar_tomorrow_kwh = solar_tomorrow_w / 1000.0
         load_rest_today_kwh = load_rest_today_w / 1000.0
 
-        # --- DYNAMIC GREEN RESERVE CALCULATION ---
-        morning_reserve_soc = max(30.0, min_soc_val)
+        # --- MORGENSPIDS (06-08) FORBRUG OG RESERVE ---
+        # Beregn ML-forbrug i morgenspidsen (kl. 06:00 - 08:00)
+        load_morning_peak_w = 0.0
+        for h in [6, 7]:
+            t_key = (morning_time.replace(hour=h)).strftime("%Y-%m-%d %H")
+            load_morning_peak_w += ml_predictions_w.get(t_key, 0.0)
+        load_morning_peak_kwh = load_morning_peak_w / 1000.0
+
+        # Minimum batteri ved kl. 06 skal dække morgenspidsen (06-08) + min_soc
+        min_reserve_morning_kwh = load_morning_peak_kwh + ((min_soc_val / 100.0) * BATTERY_CAPACITY_KWH)
+        morning_reserve_soc = max(min_soc_val, (min_reserve_morning_kwh / BATTERY_CAPACITY_KWH) * 100.0)
+
         morning_req_kwh = load_night_kwh + ((morning_reserve_soc / 100.0) * BATTERY_CAPACITY_KWH)
         green_target_soc = min(100.0, (morning_req_kwh / BATTERY_CAPACITY_KWH) * 100.0)
 
@@ -936,22 +1165,23 @@ while True:
         missing_from_grid_kwh = room_in_battery_kwh - surplus_solar_kwh
 
         if missing_from_grid_kwh <= 0:
-            night_target_soc = min_soc_val + 2.0
+            night_target_soc = morning_reserve_soc
         else:
             night_target_kwh = expected_morning_kwh + missing_from_grid_kwh
             night_target_soc = (night_target_kwh / BATTERY_CAPACITY_KWH) * 100.0
-            night_target_soc = min(100.0, max(min_soc_val, night_target_soc))
+            night_target_soc = min(100.0, max(morning_reserve_soc, night_target_soc))
 
         if solar_tomorrow_kwh > (load_day_kwh * 2.0) and valgt_profil == "Smart Selvforsyning":
-             night_target_soc = min_soc_val + 2.0
+             night_target_soc = morning_reserve_soc
 
         if valgt_profil == "Backup Mode":
             night_target_soc = max(50.0, night_target_soc)
 
+        # Hent alle fremtidige priser til min_future_buy_price
         future_prices = []
         for k, v in buy_dict.items():
             p_time = datetime.strptime(k, "%Y-%m-%d %H")
-            if now <= p_time <= now.replace(hour=6, minute=0, second=0, microsecond=0) + timedelta(days=1):
+            if current_hour <= p_time <= now.replace(hour=6, minute=0, second=0, microsecond=0) + timedelta(days=1):
                 future_prices.append({'time': p_time, 'price': v})
 
         if future_prices:
@@ -979,7 +1209,7 @@ while True:
         negative_hours = []
         for k, v in buy_dict.items():
             hour_time = datetime.strptime(k, "%Y-%m-%d %H")
-            if v <= tvangsladning_pris and hour_time > now:
+            if v <= tvangsladning_pris and hour_time > current_hour:
                 negative_hours.append(hour_time)
 
         is_tvangsladning_now = price_now_inc <= tvangsladning_pris
@@ -991,7 +1221,7 @@ while True:
                 sell_prices_before_neg = []
                 for k, v in sell_dict.items():
                     p_time = datetime.strptime(k, "%Y-%m-%d %H")
-                    if now <= p_time < first_neg_time:
+                    if current_hour <= p_time < first_neg_time:
                         sell_prices_before_neg.append({'time': p_time, 'price': v})
 
                 if sell_prices_before_neg:
@@ -1001,28 +1231,29 @@ while True:
                             is_pre_dump_now = True
 
         # =====================================================================
-        # DYNAMIC NIGHT-TIME CHEAP HOUR SELECTION WITH DEGRADATION CHECK
+        # DYNAMIC NIGHT-TIME CHEAP HOUR SELECTION (STRIKT KUN NAT: KL. 23-06)
         # =====================================================================
-        future_prices_sorted = []
         selected_charge_hours = []
         selected_afternoon_hours = []
         missing_kwh_for_night = max(0.0, BATTERY_CAPACITY_KWH * ((night_target_soc - battery_soc) / 100.0))
 
-        if future_prices:
-            future_prices_sorted = sorted(future_prices, key=lambda x: x['price'])
-            if missing_kwh_for_night > 0.5:
-                cheapest_night_price = future_prices_sorted[0]['price']
-                morning_prices = [p['price'] for p in future_prices if p['time'].hour in [6,7,8,9]]
+        # Filtrer fremtidige priser, så KUN reelle nattimer (kl. 23-06) kan vælges til natladning
+        night_prices = [p for p in future_prices if (p['time'].hour < 6 or p['time'].hour >= 23)]
 
-                if morning_prices:
-                    most_expensive_morning_price = max(morning_prices)
-                else:
-                    most_expensive_morning_price = cheapest_night_price
+        if night_prices and missing_kwh_for_night > 0.5:
+            night_prices_sorted = sorted(night_prices, key=lambda x: x['price'])
+            cheapest_night_price = night_prices_sorted[0]['price']
+            morning_prices = [p['price'] for p in future_prices if p['time'].hour in [6, 7, 8]]
 
-                if (most_expensive_morning_price - cheapest_night_price) > degradation_price or valgt_profil == "Backup Mode":
-                    hours_needed = math.ceil(missing_kwh_for_night / (MAX_CHARGE_W / 1000.0))
-                    hours_needed = max(1, hours_needed)
-                    selected_charge_hours = [bt['time'] for bt in future_prices_sorted[:hours_needed]]
+            most_expensive_morning_price = max(morning_prices) if morning_prices else cheapest_night_price
+
+            is_winter = now.month in [10, 11, 12, 1, 2, 3]
+            price_threshold = 0.15 if is_winter else degradation_price
+
+            if (most_expensive_morning_price - cheapest_night_price) >= price_threshold or valgt_profil == "Backup Mode":
+                hours_needed = math.ceil(missing_kwh_for_night / (MAX_CHARGE_W / 1000.0))
+                hours_needed = max(1, hours_needed)
+                selected_charge_hours = [bt['time'] for bt in night_prices_sorted[:hours_needed]]
 
         if 6 <= now.hour <= 18:
             sol_faktor = (solar_expected / load_rest_today_kwh) if load_rest_today_kwh > 0 else 1.0
@@ -1043,7 +1274,7 @@ while True:
             for selected_time in selected_charge_hours:
                 if selected_time.hour == now.hour and selected_time.day == now.day:
                     is_now_cheapest = True
-                    future_charge_hours = [t for t in selected_charge_hours if t >= now.replace(minute=0, second=0, microsecond=0)]
+                    future_charge_hours = [t for t in selected_charge_hours if t >= current_hour]
                     hours_left = max(1, len(future_charge_hours))
                     ideal_charge_w = ((missing_kwh_for_night / hours_left) * 1000.0) + 200
                     smart_night_charge_w = int(max(1000, min(MAX_CHARGE_W, ideal_charge_w)))
@@ -1058,8 +1289,9 @@ while True:
                 future = now + timedelta(hours=i)
                 key_temp = future.strftime("%Y-%m-%d %H")
                 load_to_17_w += ml_predictions_w.get(key_temp, 0.0)
+            load_to_17_kwh = load_to_17_w / 1000.0
 
-            expected_kwh_at_17 = min(BATTERY_CAPACITY_KWH, max(0.0, (battery_soc / 100.0) * BATTERY_CAPACITY_KWH + solar_to_17_kwh - (load_to_17_w / 1000.0)))
+            expected_kwh_at_17 = min(BATTERY_CAPACITY_KWH, max(0.0, (battery_soc / 100.0) * BATTERY_CAPACITY_KWH + solar_to_17_kwh - load_to_17_kwh))
             solar_evening_kwh = sum([v for k, v in solar_dict.items() if k.startswith(now.strftime("%Y-%m-%d")) and 17 <= int(k.split()[1]) < 21])
 
             load_evening_w = 0.0
@@ -1068,29 +1300,36 @@ while True:
                 future = now.replace(hour=i, minute=0, second=0, microsecond=0)
                 key_temp = future.strftime("%Y-%m-%d %H")
                 load_evening_w += ml_predictions_w.get(key_temp, 0.0)
+            load_evening_kwh = load_evening_w / 1000.0
 
             min_reserve_kwh = (min_soc_val / 100.0) * BATTERY_CAPACITY_KWH
-            missing_for_evening_kwh = max(0.0, (load_evening_w / 1000.0) - solar_evening_kwh) - (expected_kwh_at_17 - min_reserve_kwh)
+            needed_for_evening_kwh = max(0.0, load_evening_kwh - solar_evening_kwh)
+            available_at_17_kwh = max(0.0, expected_kwh_at_17 - min_reserve_kwh)
+            missing_for_evening_kwh = max(0.0, needed_for_evening_kwh - available_at_17_kwh)
 
             if missing_for_evening_kwh > 0.5:
-                future_prices_afternoon = [{'time': datetime.strptime(k, "%Y-%m-%d %H"), 'price': v} for k, v in buy_dict.items() if now <= datetime.strptime(k, "%Y-%m-%d %H") < now.replace(hour=17, minute=0, second=0, microsecond=0)]
+                future_prices_afternoon = [{'time': datetime.strptime(k, "%Y-%m-%d %H"), 'price': v} for k, v in buy_dict.items() if current_hour <= datetime.strptime(k, "%Y-%m-%d %H") < now.replace(hour=17, minute=0, second=0, microsecond=0)]
                 evening_prices = [v for k, v in buy_dict.items() if now.strftime("%Y-%m-%d") in k and 17 <= int(k.split()[-1]) < 21]
                 max_evening_price = max(evening_prices) if evening_prices else price_now_inc
 
                 if future_prices_afternoon:
                     min_afternoon_price = min(future_prices_afternoon, key=lambda x: x['price'])['price']
-                    if (max_evening_price - min_afternoon_price) > degradation_price:
+                    is_winter = now.month in [10, 11, 12, 1, 2, 3]
+                    price_diff_needed = 0.15 if is_winter else degradation_price
+
+                    if (max_evening_price - min_afternoon_price) >= price_diff_needed:
                         future_prices_afternoon = sorted(future_prices_afternoon, key=lambda x: x['price'])
-                        hours_needed_afternoon = max(1, math.ceil(missing_for_evening_kwh / (MAX_CHARGE_W / 1000.0)))
+                        # Brug en roligere ladehastighed (5 kW) til time-estimat, så vi ikke udskyder alt til 1 time ved 10 kW
+                        hours_needed_afternoon = max(1, math.ceil(missing_for_evening_kwh / 5.0))
+                        hours_needed_afternoon = min(hours_needed_afternoon, max(1, 17 - now.hour))
                         selected_afternoon_hours = [bt['time'] for bt in future_prices_afternoon[:hours_needed_afternoon]]
 
-                        # Udregn ALTID ladehastigheden, så Krystalkuglen kan bruge den ud i fremtiden
-                        future_aft_hours = [t for t in selected_afternoon_hours if t >= now.replace(minute=0, second=0, microsecond=0)]
+                        future_aft_hours = [t for t in selected_afternoon_hours if t >= current_hour]
                         hours_left_aft = max(1, len(future_aft_hours))
                         ideal_charge_w_aft = ((missing_for_evening_kwh / hours_left_aft) * 1000.0) + 200
-                        smart_afternoon_charge_w = int(max(1000, min(MAX_CHARGE_W, ideal_charge_w_aft)))
+                        smart_afternoon_charge_w = int(max(1500, min(MAX_CHARGE_W, ideal_charge_w_aft)))
 
-                        if now.replace(minute=0, second=0, microsecond=0) in selected_afternoon_hours:
+                        if current_hour in selected_afternoon_hours:
                             is_now_cheapest_afternoon = True
 
         smart_solar_charge_w = MAX_CHARGE_W
@@ -1145,7 +1384,7 @@ while True:
         hours_needed_evening = max(1, math.ceil(available_sell_kwh_evening / (MAX_DISCHARGE_W / 1000.0)))
 
         # Extract future prices to find exact peak times and thresholds
-        future_prices_today = [{'time': datetime.strptime(k, "%Y-%m-%d %H"), 'price': v} for k, v in sell_dict.items() if now <= datetime.strptime(k, "%Y-%m-%d %H") < now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)]
+        future_prices_today = [{'time': datetime.strptime(k, "%Y-%m-%d %H"), 'price': v} for k, v in sell_dict.items() if current_hour <= datetime.strptime(k, "%Y-%m-%d %H") < now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)]
 
         # Find next upcoming morning window (06:00 to 11:59)
         morning_start = now.replace(hour=6, minute=0, second=0, microsecond=0)
@@ -1239,7 +1478,7 @@ while True:
                     target_discharge = MAX_DISCHARGE_W
                     action_id = 4
 
-            elif is_now_cheapest and now.hour < 6:
+            elif is_now_cheapest and (now.hour < 6 or now.hour >= 23):
                 handling = get_msg("smart_charge_night", w=smart_night_charge_w)
                 target_mode = "Time of use"
                 target_charge = smart_night_charge_w
@@ -1252,7 +1491,7 @@ while True:
                 action_id = 8
 
             elif is_daytime and battery_soc < 98.0:
-                future_sell_prices = [v for k, v in sell_dict.items() if now.strftime("%Y-%m-%d") in k and int(k.split()[-1]) <= 17 and datetime.strptime(k, "%Y-%m-%d %H") > now]
+                future_sell_prices = [v for k, v in sell_dict.items() if now.strftime("%Y-%m-%d") in k and int(k.split()[-1]) <= 17 and datetime.strptime(k, "%Y-%m-%d %H") > current_hour]
                 cheapest_sell_later = min(future_sell_prices) if future_sell_prices else price_now_ex
 
                 # Check for significant price drop (dynamic value) or hitting safety price
@@ -1415,21 +1654,24 @@ while True:
                 sim_real_solar_list.append(solar_kwh * 1000.0)
 
             is_charge_hour = False
-            is_afternoon_charge = False # <--- NY VARIABEL
+            is_afternoon_charge = False
 
-            for bt in selected_charge_hours:
-                if bt.hour == future.hour and bt.day == future.day:
-                    if sim_soc < night_target_soc:
-                        is_charge_hour = True
-                        sim_charge_hours.append(key)
-                    break
-
-            if not is_charge_hour:
+            # Tjek eftermiddagsladning (Tarif-Buster) først for dagtimer
+            if 6 <= future.hour < 17:
                 for bt in selected_afternoon_hours:
                     if bt.hour == future.hour and bt.day == future.day:
                         if sim_soc < 99.0:
                             is_charge_hour = True
-                            is_afternoon_charge = True # <--- MARKER AT DET ER EFTERMIDDAG
+                            is_afternoon_charge = True
+                            sim_charge_hours.append(key)
+                        break
+
+            # Tjek natladning for nattetimer
+            if not is_charge_hour and (future.hour < 6 or future.hour >= 23):
+                for bt in selected_charge_hours:
+                    if bt.hour == future.hour and bt.day == future.day:
+                        if sim_soc < night_target_soc:
+                            is_charge_hour = True
                             sim_charge_hours.append(key)
                         break
 
@@ -1575,32 +1817,26 @@ while True:
         print(get_msg("action_sent", handling=handling))
 
         # =====================================================================
-        # READ DEBUG MODE & HISTORY FROM CSV TO DASHBOARD
+        # RECORD CURRENT DECISION TO 48H ROLLING LOG
         # =====================================================================
         debug_mode = get_ha_state("input_boolean.ai_debug_mode", "text") == "on"
-        history_text_2h = ""
-        history_text_1h = ""
+        current_hour_key = now.strftime("%Y-%m-%d %H")
+        prev_plan = rolling_data.get("planned_schedule", {}).get(current_hour_key, "Ikke registreret")
 
-        if debug_mode and os.path.exists(LOG_FILE):
-            try:
-                df = pd.read_csv(LOG_FILE)
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                for p_i in [2, 1]:
-                    p_time_check = now - timedelta(hours=p_i)
-                    time_data = df[(df['timestamp'].dt.hour == p_time_check.hour) & (df['timestamp'].dt.date == p_time_check.date())]
-                    if not time_data.empty:
-                        l_e = time_data.iloc[-1]
-                        tekst = f"**[K:{l_e['pris_koeb_inkl_moms']:.2f} S:{l_e['pris_salg_ex_moms']:.2f}]** 🔋 {int(l_e['batteri_soc'])}% [ID: {l_e['action_id']} | ☀️ {int(l_e.get('sol_prognose_nu_w', 0.0))}W] ⏪ {l_e['beslutning_tekst']}"
-                    else:
-                        tekst = get_msg("no_history")
-
-                    if p_i == 2:
-                        history_text_2h = tekst
-                    else:
-                        history_text_1h = tekst
-            except:
-                history_text_2h = get_msg("err_history")
-                history_text_1h = get_msg("err_history")
+        rolling_data["history"][current_hour_key] = {
+            "hour_key": current_hour_key,
+            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "pris_koeb_inkl_moms": round(price_now_inc, 2),
+            "pris_salg_ex_moms": round(price_now_ex, 2),
+            "batteri_soc": round(battery_soc, 1),
+            "sol_w": int(pv_w),
+            "forbrug_w": int(naked_house_w),
+            "action_id": action_id,
+            "target_mode": target_mode,
+            "target_charge_w": target_charge,
+            "beslutning_tekst": handling,
+            "tidligere_planlagt": prev_plan
+        }
 
         headers = {"Authorization": f"Bearer {HA_TOKEN}", "content-type": "application/json"}
         payload = {
@@ -1617,8 +1853,8 @@ while True:
                 "ml_expected_load_w": round(naked_house_w, 0),
                 "calc_true_capacity_kwh": round(BATTERY_CAPACITY_KWH, 2),
                 "slitagepris_kr_kwh": round(degradation_price, 2),
-                "ai_profit_today": round(profit_data["today"], 2), # <--- HER ER TRACKEREN
-                "ai_profit_total": round(profit_data["total"], 2), # <--- HER ER TRACKEREN
+                "ai_profit_today": round(profit_data["today"], 2),
+                "ai_profit_total": round(profit_data["total"], 2),
                 "current_buy_price": round(price_now_inc, 2),
                 "current_sell_price": round(price_now_ex, 2),
                 "model_sidst_traenet": model_sidst_traenet,
@@ -1626,9 +1862,7 @@ while True:
                 "sim_soc": sim_soc_list,
                 "sim_forbrug_w": [int(f) for f in sim_load_list],
                 "sim_sol_w": [int(s) for s in sim_solar_list],
-                "sim_real_sol_w": [int(s) for s in sim_real_solar_list],
-                "historik_2h": history_text_2h,
-                "historik_1h": history_text_1h
+                "sim_real_sol_w": [int(s) for s in sim_real_solar_list]
             }
         }
 
@@ -1670,7 +1904,11 @@ while True:
                 return f" [ID: {id_n} | ☀️ {t_solar_w}W]" if debug_mode else ""
 
             if is_charge_hour_future:
-                plan_text = f"{soc_text}{dbg_txt(5)} " + get_msg("plan_charge")
+                is_aft_plan = key in [bt.strftime("%Y-%m-%d %H") for bt in selected_afternoon_hours]
+                if is_aft_plan:
+                    plan_text = f"{soc_text}{dbg_txt(8)} " + get_msg("tarif_buster", w=smart_afternoon_charge_w)
+                else:
+                    plan_text = f"{soc_text}{dbg_txt(5)} " + get_msg("plan_charge")
             elif is_arbitrage_hour_future:
                 end_soc = int(time_soc)
                 if valgt_profil == "Profit Mode":
@@ -1726,7 +1964,54 @@ while True:
                     plan_text = f"{soc_text}{dbg_txt(1)} " + get_msg("plan_grid_cover", w=int(time_load))
 
             payload["attributes"][f"plan_{i}h"] = f"**[K:{b_price:.2f} S:{s_price:.2f}]** {plan_text}"
+            rolling_data["planned_schedule"][key] = plan_text
             print(f"{key:<14} | K:{b_price:>4.2f} S:{s_price:>4.2f} | {t_temp:>4.1f}°C | {t_solar_w:>5} W | {int(time_load):>8} W | {t_net_w:>6} W | {time_soc:>4.1f}% | {plan_text}  ")
+
+        # Prune older than 48 hours and save rolling log
+        cutoff = now - timedelta(hours=48)
+        cutoff_key = cutoff.strftime("%Y-%m-%d %H")
+        rolling_data["history"] = {k: v for k, v in rolling_data["history"].items() if k >= cutoff_key}
+        rolling_data["planned_schedule"] = {k: v for k, v in rolling_data["planned_schedule"].items() if k >= cutoff_key}
+        save_rolling_log(rolling_data)
+
+        # Build 48h rolling history attributes & markdown table
+        md_lines = [
+            "| Tid | K/S Pris | Batt | Sol / Forbrug | Planlagt | Udført |",
+            "| :--- | :--- | :--- | :--- | :--- | :--- |"
+        ]
+
+        for h in range(1, 49):
+            h_time = now - timedelta(hours=h)
+            h_key = h_time.strftime("%Y-%m-%d %H")
+            if h_key in rolling_data["history"]:
+                he = rolling_data["history"][h_key]
+                plan_str = he.get('tidligere_planlagt', '-')
+                if not plan_str or plan_str == "Ikke registreret":
+                    plan_clean = "-"
+                else:
+                    plan_clean = plan_str.split(" [ID:")[0].strip() if " [ID:" in plan_str else plan_str.strip()
+
+                plan_tag = f" [Plan: {plan_clean}]" if plan_clean != "-" else ""
+                
+                # Single attribute format (e.g. historik_1h, historik_2h ... historik_48h)
+                payload["attributes"][f"historik_{h}h"] = (
+                    f"**[{h_time.strftime('%d/%m %H:00')} | K:{he['pris_koeb_inkl_moms']:.2f} S:{he['pris_salg_ex_moms']:.2f}]** "
+                    f"🔋 {int(he['batteri_soc'])}% [ID: {he['action_id']} | ☀️ {he['sol_w']}W] ⏪ {he['beslutning_tekst']}{plan_tag}"
+                )
+
+                # Markdown table row
+                t_str = h_time.strftime("%d/%m %H:00")
+                p_str = f"{he['pris_koeb_inkl_moms']:.2f} / {he['pris_salg_ex_moms']:.2f}"
+                b_str = f"🔋 {int(he['batteri_soc'])}%"
+                pw_str = f"☀️{he['sol_w']}W / 🔌{he['forbrug_w']}W"
+                act_str = he['beslutning_tekst']
+                if len(act_str) > 42:
+                    act_str = act_str[:40] + "..."
+                md_lines.append(f"| {t_str} | {p_str} | {b_str} | {pw_str} | {plan_clean} | {act_str} |")
+            else:
+                payload["attributes"][f"historik_{h}h"] = get_msg("no_history")
+
+        payload["attributes"]["historik_48h_markdown"] = "\n".join(md_lines)
 
         requests.post(HA_URL, headers=headers, json=payload, timeout=10)
 
