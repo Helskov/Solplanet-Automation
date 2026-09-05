@@ -170,6 +170,19 @@ For the advanced 24-hour visualization, use the code in `forecast_card.yaml` in 
   - Fixed kWh unit scaling bug in ML consumption calculation.
   - Lowered price spread threshold for winter tariff protection (Oct–Mar).
 
+## 🛠️ Troubleshooting
+
+- **Home Assistant API Errors (`API Error`):**
+  - *Symptom:* The script logs HTTP errors (e.g., 401 or 403) upon startup.
+  - *Solution:* Verify that `HA_IP`, `HA_PORT`, and your Long-Lived Access Token (`HA_TOKEN`) in `config.ini` are correct, and ensure the token has not expired.
+
+- **Missing Core Sensors:**
+  - *Symptom:* Startup halts with an error stating core sensors are missing from the database history.
+  - *Solution:* Check that entity IDs under `[Sensors_Core]` in `config.ini` match your actual Home Assistant entities precisely, and ensure your HA history recorder is logging those specific entities.
+
+- **Unexpected Switch to `Backup Mode` (Weather Alarm):**
+  - *Symptom:* The system forces the battery to 90% via the grid during completely normal weather conditions.
+  - *Solution:* Set `WEATHER_DEBUG = true` under `[Emergency_Backup]` in `config.ini` and run `sudo journalctl -u solplanet.service -f` to see which weather condition (e.g., `lightning-rainy`) triggered it. Disable unwanted triggers by setting them to `false` or leaving them empty in the config file.
 
 ---
 ## ⚠️ Disclaimer
