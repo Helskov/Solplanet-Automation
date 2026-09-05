@@ -28,7 +28,7 @@ card:
     - type: conditional
       conditions:
         - condition: state
-          state: "on"
+          state: 'on'
       card:
         type: markdown
         content: >
@@ -38,8 +38,20 @@ card:
     - type: conditional
       conditions:
         - condition: state
+          entity: input_select.solcelle_profil
+          state: Backup Mode
+      card:
+        type: markdown
+        content: >
+          ## <ha-icon icon="mdi:weather-hurricane" style="color: #f39c12;"></ha-icon>
+          UVEJRS-BEREDSKAB AKTIVT! 
+          Systemet er automatisk skiftet til **Backup Mode** pga. vejrudsigten. 
+          Batteriet tvinges op på **{{ state_attr('sensor.solplanet_automation_plan', 'target_battery_input_power') }}W / lademål** for at sikre nødstrøm, hvis nettet svigter.         
+    - type: conditional
+      conditions:
+        - condition: state
           entity: input_boolean.batterisalg_igang_nu
-          state: "on"
+          state: 'on'
       card:
         type: markdown
         content: >
