@@ -1,4 +1,4 @@
-# Solplanet Automation 1.0 ☀️🔋
+# Solplanet Automation 1.1 ☀️🔋
 
 Solplanet Automation energy management system for Home Assistant. It uses **Machine Learning** to predict your household consumption and real-time spot prices to optimize battery usage. 
 
