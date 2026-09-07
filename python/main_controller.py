@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-__version__ = "1.1.0"
+__version__ = "1.1.2"
 import time
 import requests
 from datetime import datetime, timedelta
@@ -60,7 +60,7 @@ MESSAGES = {
         "smart_sell_morning": "☀️ Grøn Morgen-Salg: Profit dækker slitage. Sælger ned til {soc}%",
         "smart_sell_evening": "🟢 Grøn Aften-Salg: Profit dækker slitage. Sælger ned til {soc}%",
         "smart_charge_night": "🔋 Smart-Lader i nat ({w}W) - Prisforskel dækker slitage!",
-        "tarif_buster": "🔋 Tarif-Buster: Lader op før aften-spidsen ({w}W)!",
+        "tarif_buster": "🔋 Lader op før aften-spidsen ({w}W)!",
         "sol_throttle": "🌤️ Sol-Throttling: Sælger nu ({pris:.2f} kr) før prisdyk ({senere:.2f} kr)",
         "normal_steady": "🚀 Normal Drift: Stabil pris senere. Fyld batteri.",
         "normal_busy": "🚀 Normal Drift: Travlt med at fylde batteri. Dropper throttle.",
@@ -114,7 +114,7 @@ MESSAGES = {
         "smart_sell_morning": "☀️ Smart Morning Sell: Profit covers degradation. Selling to {soc}%",
         "smart_sell_evening": "🟢 Smart Evening Sell: Profit covers degradation. Selling to {soc}%",
         "smart_charge_night": "🔋 Smart Charging tonight ({w}W) - Margin covers degradation!",
-        "tarif_buster": "🔋 Peak-Buster: Pre-charging before evening peak ({w}W)!",
+        "tarif_buster": "🔋 Pre-charging before evening peak ({w}W)!",
         "sol_throttle": "🌤️ Solar-Throttling: Selling now ({pris:.2f}) before price drops ({senere:.2f})",
         "normal_steady": "🚀 Normal Ops: Stable future price. Filling battery.",
         "normal_busy": "🚀 Normal Ops: Busy filling battery. Skipping throttle.",
@@ -185,6 +185,7 @@ SENSOR_SOC = c_sens.get('BATTERY_SOC', '')
 SENSOR_PRIS_NU_EX = c_sens.get('PRICE_SELL', '')
 SENSOR_PRIS_NU_INKL = c_sens.get('PRICE_BUY', '')
 SENSOR_PRIS_TOMORROW_INKL = c_sens.get('PRICE_BUY_TOMORROW', '')
+SENSOR_PRIS_FORECAST_INKL = c_sens.get('PRICE_BUY_FORECAST', '')
 SENSOR_VEJR = c_sens.get('WEATHER_ENTITY', '')
 SENSOR_UDE_TEMP = c_sens.get('WEATHER_TEMP', '')
 SENSOR_PV = c_sens.get('PV_POWER', '')
@@ -877,19 +878,17 @@ while True:
             ev_shield_threshold = 10000.0
 
         # --- PRICES AND WEATHER ---
-        # Fetch and parse buy prices (Universal)
+        # 1. Hent officielle købs- og salgspriser (Nord Pool / EDS / Strømligning)
         buy_raw_data = fetch_universal_prices(SENSOR_PRIS_NU_INKL, SENSOR_PRIS_TOMORROW_INKL)
-        buy_dict = build_time_price_dict(buy_raw_data)
+        official_buy_dict = build_time_price_dict(buy_raw_data)
 
-        # Fetch and parse sell prices (Universal)
         sell_raw_data = fetch_universal_prices(SENSOR_PRIS_NU_EX, SENSOR_PRIS_TOMORROW_EX)
         sell_dict = build_time_price_dict(sell_raw_data)
 
-        # --- NY DYNAMISK FALLBACK MED NESTED TARIFF-SUPPORT ---
+        # 2. DYNAMISK TARIFF-FALLBACK (Køres STRIKT kun på officielle priser for at beskytte sell_dict)
         buy_attrs = get_ha_attributes(SENSOR_PRIS_NU_INKL)
         eds_main_tariffs = buy_attrs.get('tariffs', {})
 
-        # EDS lægger tarifferne ind i et ekstra 'tariffs' lag. Vi tjekker om dette nested lag findes:
         if 'tariffs' in eds_main_tariffs:
             eds_hourly_tariffs = eds_main_tariffs.get('tariffs', {})
             eds_add_tariffs = eds_main_tariffs.get('additional_tariffs', {})
@@ -899,30 +898,35 @@ while True:
 
         add_tariff_sum = sum([float(v) for v in eds_add_tariffs.values()]) if isinstance(eds_add_tariffs, dict) else 0.0
 
-        # Calculate implied tariffs from overlapping data (Buy - Sell)
         implied_tariffs_by_hour = {}
-        for tk, b_price in buy_dict.items():
+        for tk, b_price in official_buy_dict.items():
             if tk in sell_dict:
                 hr = str(datetime.strptime(tk, "%Y-%m-%d %H").hour)
                 t_val = (float(b_price) / VAT_RATE) - float(sell_dict[tk])
                 implied_tariffs_by_hour[hr] = max(0.0, t_val)
 
-        for time_key, buy_price in buy_dict.items():
+        for time_key, buy_price in official_buy_dict.items():
             if time_key not in sell_dict:
                 hour_str = str(datetime.strptime(time_key, "%Y-%m-%d %H").hour)
-                
-                # Check if we got valid tariff data from EDS attributes
                 if len(eds_hourly_tariffs) > 0 or add_tariff_sum > 0:
                     hour_tariff = float(eds_hourly_tariffs.get(hour_str, 0.0)) if isinstance(eds_hourly_tariffs, dict) else 0.0
                     total_tariff = hour_tariff + add_tariff_sum
                 else:
-                    # Use dynamically calculated tariff from today's matching hour
                     total_tariff = implied_tariffs_by_hour.get(hour_str, 0.0)
 
-                # I DK tillægges tariffer og spotpris FØR momsen beregnes.
-                # For at finde den rene spotpris: (Købspris / moms) - Tariffer
                 ren_spotpris = (float(buy_price) / VAT_RATE) - total_tariff
                 sell_dict[time_key] = ren_spotpris
+
+        # 3. HENT KØBS-PROGNOSE (Bruges udelukkende til at udfylde manglende købstimer fremadrettet)
+        forecast_buy_raw = []
+        if SENSOR_PRIS_FORECAST_INKL and SENSOR_PRIS_FORECAST_INKL.strip() != "":
+            attrs_fc = get_ha_attributes(SENSOR_PRIS_FORECAST_INKL)
+            if 'prices' in attrs_fc and isinstance(attrs_fc['prices'], list):
+                forecast_buy_raw = attrs_fc['prices']
+        forecast_buy_dict = build_time_price_dict(forecast_buy_raw)
+
+        # Fletning: Prognose danner baggrund, officielle priser overskriver altid
+        buy_dict = {**forecast_buy_dict, **official_buy_dict}
 
         # Opdater den live salgspris (hjernen), hvis vi ikke har en dedikeret salgs-sensor
         if not SENSOR_PRIS_NU_EX:
@@ -1143,39 +1147,50 @@ while True:
         solar_tomorrow_kwh = solar_tomorrow_w / 1000.0
         load_rest_today_kwh = load_rest_today_w / 1000.0
 
-        # --- MORGENSPIDS (06-08) FORBRUG OG RESERVE ---
-        # Beregn ML-forbrug i morgenspidsen (kl. 06:00 - 08:00)
-        load_morning_peak_w = 0.0
-        for h in [6, 7]:
+        # --- ENERGIBALANCE FREM TIL SOLOVERTAGELSE (V1.1.2) ---
+        # Scan morgentimerne fra kl. 06:00 og frem for at finde hvornår solen reelt dækker huset
+        load_until_solar_w = 0.0
+        for h in range(6, 16):
             t_key = (morning_time.replace(hour=h)).strftime("%Y-%m-%d %H")
-            load_morning_peak_w += ml_predictions_w.get(t_key, 0.0)
-        load_morning_peak_kwh = load_morning_peak_w / 1000.0
+            sol_h_w = solar_dict.get(t_key, 0.0) * 1000.0
+            load_h_w = ml_predictions_w.get(t_key, 0.0)
+            
+            # Solen har overtaget når den dækker husforbruget og yder mindst 300W
+            if sol_h_w >= load_h_w and sol_h_w > 300.0:
+                break
+            
+            # Akkumuler netto-underskuddet i morgentimerne
+            load_until_solar_w += max(0.0, load_h_w - sol_h_w)
+            
+        load_until_solar_kwh = load_until_solar_w / 1000.0
 
-        # Minimum batteri ved kl. 06 skal dække morgenspidsen (06-08) + min_soc
-        min_reserve_morning_kwh = load_morning_peak_kwh + ((min_soc_val / 100.0) * BATTERY_CAPACITY_KWH)
-        morning_reserve_soc = max(min_soc_val, (min_reserve_morning_kwh / BATTERY_CAPACITY_KWH) * 100.0)
-
-        morning_req_kwh = load_night_kwh + ((morning_reserve_soc / 100.0) * BATTERY_CAPACITY_KWH)
-        green_target_soc = min(100.0, (morning_req_kwh / BATTERY_CAPACITY_KWH) * 100.0)
-
+        # Minimum reserve: Minimum SOC + 0.5 kWh sikkerhedsbuffer
+        min_reserve_kwh = ((min_soc_val / 100.0) * BATTERY_CAPACITY_KWH) + 0.5
+        
+        # Samlet energibehov fra NU og frem til solovertagelse
+        total_need_until_solar_kwh = load_night_kwh + load_until_solar_kwh + min_reserve_kwh
+        
+        # Nuværende lagret energi
         now_battery_kwh = BATTERY_CAPACITY_KWH * (battery_soc / 100.0)
-        expected_morning_kwh = max((min_soc_val/100.0)*BATTERY_CAPACITY_KWH, now_battery_kwh - load_night_kwh)
-        surplus_solar_kwh = max(0.0, solar_tomorrow_kwh - load_day_kwh)
-        room_in_battery_kwh = BATTERY_CAPACITY_KWH - expected_morning_kwh
-        missing_from_grid_kwh = room_in_battery_kwh - surplus_solar_kwh
+        
+        # green_target_soc bruges til aftensalg: Sælg kun ned til hvad der skal bruges inden solstart
+        green_target_soc = min(100.0, max(min_soc_val, (total_need_until_solar_kwh / BATTERY_CAPACITY_KWH) * 100.0))
 
-        if missing_from_grid_kwh <= 0:
-            night_target_soc = morning_reserve_soc
+        # Reelt underskudstjek for natopladning
+        if now_battery_kwh >= total_need_until_solar_kwh:
+            # Batteriet har rigeligt med strøm til at nå solopgang uden net-køb
+            missing_kwh_for_night = 0.0
+            night_target_soc = min_soc_val
         else:
-            night_target_kwh = expected_morning_kwh + missing_from_grid_kwh
-            night_target_soc = (night_target_kwh / BATTERY_CAPACITY_KWH) * 100.0
-            night_target_soc = min(100.0, max(morning_reserve_soc, night_target_soc))
+            # Vi mangler strøm for at nå solopgang: Lad kun det nødvendige op
+            missing_kwh_for_night = total_need_until_solar_kwh - now_battery_kwh
+            night_target_soc = min(100.0, (total_need_until_solar_kwh / BATTERY_CAPACITY_KWH) * 100.0)
 
-        if solar_tomorrow_kwh > (load_day_kwh * 2.0) and valgt_profil == "Smart Selvforsyning":
-             night_target_soc = morning_reserve_soc
-
+        # Backup Mode overstyring
         if valgt_profil == "Backup Mode":
-            night_target_soc = max(50.0, night_target_soc)
+            storm_target = float(config['Emergency_Backup'].get('WEATHER_TARGET_SOC', 90.0))
+            night_target_soc = max(storm_target, night_target_soc)
+            missing_kwh_for_night = max(0.0, BATTERY_CAPACITY_KWH * ((night_target_soc - battery_soc) / 100.0))
 
         # Hent alle fremtidige priser til min_future_buy_price
         future_prices = []
@@ -1235,7 +1250,6 @@ while True:
         # =====================================================================
         selected_charge_hours = []
         selected_afternoon_hours = []
-        missing_kwh_for_night = max(0.0, BATTERY_CAPACITY_KWH * ((night_target_soc - battery_soc) / 100.0))
 
         # Filtrer fremtidige priser, så KUN reelle nattimer (kl. 23-06) kan vælges til natladning
         night_prices = [p for p in future_prices if (p['time'].hour < 6 or p['time'].hour >= 23)]
@@ -1280,57 +1294,94 @@ while True:
                     smart_night_charge_w = int(max(1000, min(MAX_CHARGE_W, ideal_charge_w)))
                     break
 
+        # =====================================================================
+        # DYNAMISK DAGS- OG TARIF-BUSTER OPTIMERING (24-TIMERS RULLENDE)
+        # =====================================================================
         smart_afternoon_charge_w = 0
         is_now_cheapest_afternoon = False
-        if 6 <= now.hour < 17:
-            solar_to_17_kwh = sum([v for k, v in solar_dict.items() if k.startswith(now.strftime("%Y-%m-%d")) and now.hour <= int(k.split()[1]) < 17])
-            load_to_17_w = 0.0
-            for i in range(17 - now.hour):
-                future = now + timedelta(hours=i)
-                key_temp = future.strftime("%Y-%m-%d %H")
-                load_to_17_w += ml_predictions_w.get(key_temp, 0.0)
-            load_to_17_kwh = load_to_17_w / 1000.0
+        selected_afternoon_hours = []
 
-            expected_kwh_at_17 = min(BATTERY_CAPACITY_KWH, max(0.0, (battery_soc / 100.0) * BATTERY_CAPACITY_KWH + solar_to_17_kwh - load_to_17_kwh))
-            solar_evening_kwh = sum([v for k, v in solar_dict.items() if k.startswith(now.strftime("%Y-%m-%d")) and 17 <= int(k.split()[1]) < 21])
+        # Find alle dags-timer (kl. 10-16) inden for de næste 24 timer
+        day_candidates = []
+        for i in range(25):
+            chk_time = current_hour + timedelta(hours=i)
+            chk_key = chk_time.strftime("%Y-%m-%d %H")
+            if 10 <= chk_time.hour <= 16 and chk_key in buy_dict:
+                day_candidates.append({
+                    'time': chk_time,
+                    'key': chk_key,
+                    'price': buy_dict[chk_key]
+                })
 
-            load_evening_w = 0.0
-            for i in range(17, 21):
-                if i <= now.hour: continue
-                future = now.replace(hour=i, minute=0, second=0, microsecond=0)
-                key_temp = future.strftime("%Y-%m-%d %H")
-                load_evening_w += ml_predictions_w.get(key_temp, 0.0)
-            load_evening_kwh = load_evening_w / 1000.0
+        if day_candidates:
+            # Find den billigste dagtime i det kommende døgn
+            cheapest_day_item = min(day_candidates, key=lambda x: x['price'])
+            cheapest_day_price = cheapest_day_item['price']
+            cheapest_day_time = cheapest_day_item['time']
 
-            min_reserve_kwh = (min_soc_val / 100.0) * BATTERY_CAPACITY_KWH
-            needed_for_evening_kwh = max(0.0, load_evening_kwh - solar_evening_kwh)
-            available_at_17_kwh = max(0.0, expected_kwh_at_17 - min_reserve_kwh)
-            missing_for_evening_kwh = max(0.0, needed_for_evening_kwh - available_at_17_kwh)
+            # Find aftenen (kl. 17-21) der følger direkte efter dette dags-vindue
+            aften_start = cheapest_day_time.replace(hour=17, minute=0, second=0, microsecond=0)
+            aften_slut = cheapest_day_time.replace(hour=21, minute=0, second=0, microsecond=0)
 
-            if missing_for_evening_kwh > 0.5:
-                future_prices_afternoon = [{'time': datetime.strptime(k, "%Y-%m-%d %H"), 'price': v} for k, v in buy_dict.items() if current_hour <= datetime.strptime(k, "%Y-%m-%d %H") < now.replace(hour=17, minute=0, second=0, microsecond=0)]
-                evening_prices = [v for k, v in buy_dict.items() if now.strftime("%Y-%m-%d") in k and 17 <= int(k.split()[-1]) < 21]
-                max_evening_price = max(evening_prices) if evening_prices else price_now_inc
+            evening_prices = [v for k, v in buy_dict.items() if aften_start <= datetime.strptime(k, "%Y-%m-%d %H") < aften_slut]
+            max_evening_price = max(evening_prices) if evening_prices else price_now_inc
 
-                if future_prices_afternoon:
-                    min_afternoon_price = min(future_prices_afternoon, key=lambda x: x['price'])['price']
-                    is_winter = now.month in [10, 11, 12, 1, 2, 3]
-                    price_diff_needed = 0.15 if is_winter else degradation_price
+            is_winter = now.month in [10, 11, 12, 1, 2, 3]
+            price_diff_needed = 0.15 if is_winter else max(0.30, degradation_price)
 
-                    if (max_evening_price - min_afternoon_price) >= price_diff_needed:
-                        future_prices_afternoon = sorted(future_prices_afternoon, key=lambda x: x['price'])
-                        # Brug en roligere ladehastighed (5 kW) til time-estimat, så vi ikke udskyder alt til 1 time ved 10 kW
-                        hours_needed_afternoon = max(1, math.ceil(missing_for_evening_kwh / 5.0))
-                        hours_needed_afternoon = min(hours_needed_afternoon, max(1, 17 - now.hour))
-                        selected_afternoon_hours = [bt['time'] for bt in future_prices_afternoon[:hours_needed_afternoon]]
+            # Evaluer om dagsprisen er markant billigere end aftentimerne
+            if (max_evening_price - cheapest_day_price) >= price_diff_needed:
+                # 1. Udregn samlet energibehov fra kl. 17 og frem til næste formiddags solovertagelse
+                need_w = 0.0
+                for step in range(20):
+                    f_time = aften_start + timedelta(hours=step)
+                    f_key = f_time.strftime("%Y-%m-%d %H")
+                    sol_w = solar_dict.get(f_key, 0.0) * 1000.0
+                    load_w = ml_predictions_w.get(f_key, 0.0)
 
-                        future_aft_hours = [t for t in selected_afternoon_hours if t >= current_hour]
-                        hours_left_aft = max(1, len(future_aft_hours))
-                        ideal_charge_w_aft = ((missing_for_evening_kwh / hours_left_aft) * 1000.0) + 200
-                        smart_afternoon_charge_w = int(max(1500, min(MAX_CHARGE_W, ideal_charge_w_aft)))
+                    # Solen overtager huset næste formiddag efter kl. 06
+                    if f_time.hour >= 6 and f_time.date() > cheapest_day_time.date():
+                        if sol_w >= load_w and sol_w > 300.0:
+                            break
 
-                        if current_hour in selected_afternoon_hours:
+                    need_w += max(0.0, load_w - sol_w)
+
+                total_need_from_17_kwh = need_w / 1000.0
+
+                # 2. Beregn forventet batteristand ved kl. 17 (uden dags-netopladning)
+                hours_to_17 = max(0, int((aften_start - now).total_seconds() / 3600))
+                pre_17_sol_kwh = 0.0
+                pre_17_load_kwh = 0.0
+                for step in range(hours_to_17):
+                    t_step = now + timedelta(hours=step)
+                    k_step = t_step.strftime("%Y-%m-%d %H")
+                    pre_17_sol_kwh += solar_dict.get(k_step, 0.0)
+                    pre_17_load_kwh += (ml_predictions_w.get(k_step, 0.0) / 1000.0)
+
+                est_kwh_at_17 = min(BATTERY_CAPACITY_KWH, max(0.0, (battery_soc / 100.0) * BATTERY_CAPACITY_KWH + pre_17_sol_kwh - pre_17_load_kwh))
+                min_reserve_kwh = (min_soc_val / 100.0) * BATTERY_CAPACITY_KWH
+
+                # Sæt målet for kl. 17 til at dække aftenspids + nat + morgenspids
+                target_kwh_at_17 = min(BATTERY_CAPACITY_KWH, total_need_from_17_kwh + min_reserve_kwh)
+
+                # Hvis prisforskellen er enorm (over 1,20 kr/kWh spænd til aftenen), fyldes batteriet til 90%
+                if (max_evening_price - cheapest_day_price) >= 1.20:
+                    target_kwh_at_17 = max(target_kwh_at_17, BATTERY_CAPACITY_KWH * 0.90)
+
+                missing_for_afternoon_kwh = max(0.0, target_kwh_at_17 - est_kwh_at_17)
+
+                if missing_for_afternoon_kwh > 0.5:
+                    sorted_day = sorted(day_candidates, key=lambda x: x['price'])
+                    hours_needed_afternoon = max(1, math.ceil(missing_for_afternoon_kwh / 5.0))
+                    hours_needed_afternoon = min(hours_needed_afternoon, len(sorted_day))
+                    selected_afternoon_hours = [bt['time'] for bt in sorted_day[:hours_needed_afternoon]]
+
+                    smart_afternoon_charge_w = int(max(2000, min(MAX_CHARGE_W, ((missing_for_afternoon_kwh / hours_needed_afternoon) * 1000.0) + 300)))
+
+                    for bt in selected_afternoon_hours:
+                        if bt.hour == now.hour and bt.day == now.day:
                             is_now_cheapest_afternoon = True
+                            break
 
         smart_solar_charge_w = MAX_CHARGE_W
         is_peak_shaving = False
@@ -1843,7 +1894,7 @@ while True:
             "state": handling,
             "attributes": {
                 "friendly_name": "Intelligent Solcellestyring (ML)",
-                "version": "1.0.0",
+                "version": "1.1.2",
                 "icon": "mdi:solar-power" if valgt_profil == "Smart Selvforsyning" else ("mdi:cash" if valgt_profil == "Profit Mode" else "mdi:shield-home"),
                 "sidst_opdateret": now.strftime("%Y-%m-%d %H:%M:%S"),
                 "target_work_mode": target_mode,
