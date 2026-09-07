@@ -39,6 +39,13 @@ BATTERY_SOC = sensor.solplanet_battery_oe012k60z2550185_battery_state_of_charge
 # - Energi Data Service: sensor.energi_data_service
 PRICE_BUY = sensor.stromligning_current_price_vat
 
+# PRICE_BUY_FORECAST: Optional multi-day buying price forecast sensor (incl. VAT/tariffs).
+# Extends the forward planning horizon beyond the current day before official Nord Pool
+# auction prices are published around 13:00.
+# - Stromligning: sensor.stromligning_forecasts_vat
+# Leave empty if not using a price forecast sensor.
+PRICE_BUY_FORECAST = sensor.stromligning_forecasts_vat
+
 # PRICE_SELL: Enter the sensor for your current selling price (spot price)
 # - Stromligning: sensor.stromligning_spotprice_ex_vat
 # - Energi Data Service: Leave BLANK (The system automatically calculates the spot price from the buy sensor)
