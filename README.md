@@ -169,6 +169,14 @@ For the advanced 24-hour visualization, use the code in `forecast_card.yaml` in 
   - Separated night charging (23–06) and afternoon tariff-buster (11–17) logic.
   - Fixed kWh unit scaling bug in ML consumption calculation.
   - Lowered price spread threshold for winter tariff protection (Oct–Mar).
+  - Aligned crystal ball simulation directly with inverter dispatch actions.
+* 1.1.2 Dynamic Energy Balance, Opportunistic Day Arbitrage & Price Forecast Engine:
+  - **ML Energy Balance Guard:** Night grid charging now strictly requires a forecasted net energy deficit until solar production resumes, eliminating redundant night top-ups when existing battery capacity covers expected consumption.
+  - **24-Hour Rolling Daytime Arbitrage:** Converted mid-day charge logic to a continuous 24-hour lookahead, opportunistically exploiting cheap mid-day price valleys to pre-charge for evening peaks and night hours whenever price spreads exceed degradation wear costs.
+  - **Winter Full-Day Horizon:** Extended solar/deficit scanning to 22:00 and aligned night charge price checks against entire day-and-evening peaks (06–21) to safeguard against steep winter spidstariffer.
+  - **Multi-Day Price Forecast Support (`PRICE_BUY_FORECAST`):** Integrated forward-looking buy price forecast entities (e.g., Strømligning VAT forecast) to bridge the morning horizon blind spot (06–13) before official Nord Pool auction prices arrive.
+  - **Export Spot Isolation:** Preserved strict separation ensuring export/selling decisions rely exclusively on verified, official spot prices (excl. VAT/tariffs) without forecast speculation.
+  - **Cleaned Status Messaging:** Standardized planning status descriptions, replacing legacy "Tarif-Buster" labels with clean charging indicators.
 
 ## 🛠️ Troubleshooting
 
@@ -186,4 +194,4 @@ For the advanced 24-hour visualization, use the code in `forecast_card.yaml` in 
 
 ---
 ## ⚠️ Disclaimer
-*This project is an advanced open-source automation tool provided "as is". It is used entirely at your own risk (på eget ansvar). Solar battery systems involve high voltage, severe safety risks, and expensive hardware. Always ensure your configuration matches your hardware limits. The developers hold absolutely no liability for drained batteries, financial losses, grid penalties, or hardware degradation.*
+*This project is an advanced open-source automation tool provided "as is". It is used entirely at your own risk (på eget ansvar). Solar battery systems involve high voltage, severe safety risks, and expensive hardware. Always ensure your configuration matches your hardware limits. The developers hold absolutely no liability for drained batteries, financial losses, grid penalties, or hardware degradation.* Work is still in progress
