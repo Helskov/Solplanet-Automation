@@ -177,7 +177,7 @@ For the advanced 24-hour visualization, use the code in `forecast_card.yaml` in 
   - **Multi-Day Price Forecast Support (`PRICE_BUY_FORECAST`):** Integrated forward-looking buy price forecast entities (e.g., Strømligning VAT forecast) to bridge the morning horizon blind spot (06–13) before official Nord Pool auction prices arrive.
   - **Export Spot Isolation:** Preserved strict separation ensuring export/selling decisions rely exclusively on verified, official spot prices (excl. VAT/tariffs) without forecast speculation.
   - **Cleaned Status Messaging:** Standardized planning status descriptions, replacing legacy "Tarif-Buster" labels with clean charging indicators.
-
+  - **Fixed redundant night charging by factoring in expected daytime solar surplus before evaluating the upcoming night's energy deficit.
 ## 🛠️ Troubleshooting
 
 - **Home Assistant API Errors (`API Error`):**
