@@ -13,7 +13,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 import time
 import requests
 from datetime import datetime, timedelta
@@ -59,8 +59,8 @@ MESSAGES = {
         "backup_mode": "🔵 Backup Mode: Holder batteri klar",
         "smart_sell_morning": "☀️ Grøn Morgen-Salg: Profit dækker slitage. Sælger ned til {soc}%",
         "smart_sell_evening": "🟢 Grøn Aften-Salg: Profit dækker slitage. Sælger ned til {soc}%",
-        "smart_charge_night": "🔋 Smart-Lader i nat ({w}W) - Prisforskel dækker slitage!",
-        "tarif_buster": "🔋 Lader op før aften-spidsen ({w}W)!",
+        "smart_charge_night": "🔋 Smart-Lader i nat (Op til {soc}%) - Prisforskel dækker slitage!",
+        "tarif_buster": "🔋 Lader op før aften-spidsen (Op til {soc}%)!",
         "sol_throttle": "🌤️ Sol-Throttling: Sælger nu ({pris:.2f} kr) før prisdyk ({senere:.2f} kr)",
         "normal_steady": "🚀 Normal Drift: Stabil pris senere. Fyld batteri.",
         "normal_busy": "🚀 Normal Drift: Travlt med at fylde batteri. Dropper throttle.",
@@ -113,8 +113,8 @@ MESSAGES = {
         "backup_mode": "🔵 Backup Mode: Keeping battery ready",
         "smart_sell_morning": "☀️ Smart Morning Sell: Profit covers degradation. Selling to {soc}%",
         "smart_sell_evening": "🟢 Smart Evening Sell: Profit covers degradation. Selling to {soc}%",
-        "smart_charge_night": "🔋 Smart Charging tonight ({w}W) - Margin covers degradation!",
-        "tarif_buster": "🔋 Pre-charging before evening peak ({w}W)!",
+        "smart_charge_night": "🔋 Smart Charging tonight (Up to {soc}%) - Margin covers degradation!",
+        "tarif_buster": "🔋 Pre-charging before evening peak (Up to {soc}%)!",
         "sol_throttle": "🌤️ Solar-Throttling: Selling now ({pris:.2f}) before price drops ({senere:.2f})",
         "normal_steady": "🚀 Normal Ops: Stable future price. Filling battery.",
         "normal_busy": "🚀 Normal Ops: Busy filling battery. Skipping throttle.",
@@ -264,10 +264,10 @@ def backfill_rolling_log_from_csv(rolling_data, now):
         recent_df = df[df['dt'] >= cutoff].copy()
         if recent_df.empty:
             return rolling_data
-        
+
         recent_df['hour_key'] = recent_df['dt'].dt.strftime('%Y-%m-%d %H')
         grouped = recent_df.groupby('hour_key').last().reset_index()
-        
+
         for _, row in grouped.iterrows():
             hk = str(row['hour_key'])
             if hk not in rolling_data["history"]:
@@ -280,7 +280,7 @@ def backfill_rolling_log_from_csv(rolling_data, now):
                     "sol_w": int(row.get('pv_produktion_nu_w', row.get('sol_prognose_nu_w', 0.0))),
                     "forbrug_w": int(row.get('hus_forbrug_nu_w', 0.0)),
                     "action_id": int(row.get('action_id', 1)),
-                    "target_mode": str(row.get('target_mode', 'Self-consumption')),
+                    "target_mode": str(row.get('target_mode', 'Self-consumption mode')),
                     "target_charge_w": int(row.get('target_charge_w', 0)),
                     "beslutning_tekst": str(row.get('beslutning_tekst', '')),
                     "tidligere_planlagt": "Ukendt (før opdatering)"
@@ -429,7 +429,7 @@ def evaluate_severe_weather(forecasts, weather_attrs, config_obj):
 
     wind_raw = sec.get('TRIGGER_WIND_GUST_MS', '').strip()
     trigger_wind = float(wind_raw) if wind_raw else None
-    
+
     trigger_exceptional = is_active('TRIGGER_ON_EXCEPTIONAL')
     trigger_thunder = is_active('TRIGGER_ON_THUNDER')
     trigger_snow = is_active('TRIGGER_ON_HEAVY_SNOW')
@@ -458,7 +458,7 @@ def evaluate_severe_weather(forecasts, weather_attrs, config_obj):
             break
 
         cond = str(f.get('condition', '')).lower()
-        
+
         raw_speed = float(f.get('wind_speed', 0.0))
         raw_gust = float(f.get('wind_gust_speed', raw_speed))
         if 'km' in wind_unit:
@@ -706,7 +706,7 @@ while True:
         try:
             model_file = os.path.join(script_dir, 'ml_solcelle_model.pkl')
             model_mtime = os.path.getmtime(model_file)
-            
+
             if ml_model is None or model_mtime > last_model_mtime:
                 print(f"🔄 Indlæser ML-model (Ændret: {datetime.fromtimestamp(model_mtime).strftime('%Y-%m-%d %H:%M:%S')})...")
                 with open(model_file, 'rb') as f:
@@ -865,6 +865,21 @@ while True:
         if ev_shield_threshold < 1000:
             ev_shield_threshold = 10000.0
 
+        # --- EV SHIELD LOGIC (INITIALISERES TIDLIGT) ---
+        ev_shield_triggered = False
+        ev_dynamic_discharge = MAX_DISCHARGE_W
+        ev_msg = ""
+
+        if not is_ev_solar_charging:
+            if ev_shield_mode == "Simpel (Total Forbrugsgrænse)" and total_house_w > ev_shield_threshold:
+                ev_shield_triggered = True
+                ev_dynamic_discharge = 0
+                ev_msg = get_msg("ev_shield_simple", threshold=int(ev_shield_threshold))
+            elif ev_shield_mode == "Avanceret (Målt på lader)" and ev_total_w > 500:
+                ev_shield_triggered = True
+                ev_dynamic_discharge = int(min(MAX_DISCHARGE_W, naked_house_w + 200))
+                ev_msg = get_msg("ev_shield_advanced", w=ev_dynamic_discharge)
+
         # --- PRICES AND WEATHER ---
         # 1. Hent officielle købs- og salgspriser (Nord Pool / EDS / Strømligning)
         buy_raw_data = fetch_universal_prices(SENSOR_PRIS_NU_INKL, SENSOR_PRIS_TOMORROW_INKL)
@@ -952,7 +967,7 @@ while True:
         # API SANITY CHECK (BLACKOUT GUARD)
         # =====================================================================
         if len(buy_dict) == 0 or len(sell_dict) == 0:
-            handling = "⚠️ API Error: Missing price data. Forcing safe Self-consumption."
+            handling = "⚠️ API Error: Missing price data. Forcing safe Self-consumption mode."
             print("\n❌ CRITICAL: API Blackout detected! Price dictionaries are empty. Activating emergency protocol.")
 
             headers = {"Authorization": f"Bearer {HA_TOKEN}", "content-type": "application/json"}
@@ -962,7 +977,7 @@ while True:
                     "friendly_name": "Intelligent Solcellestyring (ML)",
                     "icon": "mdi:alert-network",
                     "sidst_opdateret": now.strftime("%Y-%m-%d %H:%M:%S"),
-                    "target_work_mode": "Self-consumption",
+                    "target_work_mode": "Self-consumption mode",
                     "target_battery_input_power": 10000,
                     "target_battery_output_power": MAX_DISCHARGE_W,
                     "action_id": 1
@@ -990,7 +1005,7 @@ while True:
                 "throttle_safety_price": 0.0,
                 "min_eksport_pris_limit": min_export_price,
                 "action_id": 1,
-                "target_mode": "Self-consumption",
+                "target_mode": "Self-consumption mode",
                 "target_charge_w": 10000,
                 "beslutning_tekst": handling,
                 "udendoers_temp": current_temp
@@ -1077,7 +1092,7 @@ while True:
                     temp_col_name: t_temp
                 })
                 future_keys.append(key)
-            
+
             df_future = pd.DataFrame(future_hours_data)
             preds = ml_model.predict(df_future)
             for k, p in zip(future_keys, preds):
@@ -1124,20 +1139,20 @@ while True:
         load_day_kwh = load_day_w / 1000.0
         solar_tomorrow_kwh = solar_tomorrow_w / 1000.0
 
-        # --- ENERGIBALANCE FREM TIL SOLOVERTAGELSE (V1.1.2) ---
+        # --- ENERGIBALANCE FREM TIL SOLOVERTAGELSE (V1.1.3) ---
         # Scan morgendagen fra kl. 06:00 til 22:00 for at finde hvornår solen reelt dækker huset
         load_until_solar_w = 0.0
         for h in range(6, 22):
             t_key = (morning_time.replace(hour=h)).strftime("%Y-%m-%d %H")
             sol_h_w = solar_dict.get(t_key, 0.0) * 1000.0
             load_h_w = ml_predictions_w.get(t_key, 0.0)
-            
+
             # Solen har overtaget når den dækker husforbruget og yder mindst 300W
             if sol_h_w >= load_h_w and sol_h_w > 300.0:
                 break
-            
+
             load_until_solar_w += max(0.0, load_h_w - sol_h_w)
-            
+
         load_until_solar_kwh = load_until_solar_w / 1000.0
         min_reserve_kwh = ((min_soc_val / 100.0) * BATTERY_CAPACITY_KWH) + 0.5
         now_battery_kwh = BATTERY_CAPACITY_KWH * (battery_soc / 100.0)
@@ -1151,17 +1166,15 @@ while True:
 
         # Samlet energibehov fra aftenstart (kl. 20) gennem natten og frem til solovertagelse
         total_need_until_solar_kwh = load_night_kwh + load_until_solar_kwh + min_reserve_kwh
-        
+
         # green_target_soc bruges til aftensalg: Sælg kun ned til hvad der skal bruges inden solstart
         green_target_soc = min(100.0, max(min_soc_val, (total_need_until_solar_kwh / BATTERY_CAPACITY_KWH) * 100.0))
 
         # Underskudstjek for natopladning evalueres mod forventet aftenstand
         if est_evening_battery_kwh >= total_need_until_solar_kwh:
-            # Batteriet forventes at have rigeligt med strøm ved aftenstart til at bære natten
             missing_kwh_for_night = 0.0
             night_target_soc = min_soc_val
         else:
-            # Reelt forventet underskud i nat: Lad kun op til at dække forskellen
             missing_kwh_for_night = total_need_until_solar_kwh - est_evening_battery_kwh
             night_target_soc = min(100.0, (total_need_until_solar_kwh / BATTERY_CAPACITY_KWH) * 100.0)
 
@@ -1228,8 +1241,6 @@ while True:
         # DYNAMIC NIGHT-TIME CHEAP HOUR SELECTION (STRIKT KUN NAT: KL. 23-06)
         # =====================================================================
         selected_charge_hours = []
-        selected_afternoon_hours = []
-
         night_prices = [p for p in future_prices if (p['time'].hour < 6 or p['time'].hour >= 23)]
 
         if night_prices and missing_kwh_for_night > 0.5:
@@ -1255,35 +1266,35 @@ while True:
         throttle_safety_price = get_ha_state("input_number.sol_throttle_safety_price", 'float')
 
         handling = get_msg("normal_default")
-        target_mode = "Self-consumption"
+        target_mode = "Self-consumption mode"
         target_charge = 10000
         target_discharge = MAX_DISCHARGE_W
         action_id = 1
         is_now_cheapest = False
-        smart_night_charge_w = MAX_CHARGE_W
 
         if missing_kwh_for_night > 0.5 and selected_charge_hours:
             for selected_time in selected_charge_hours:
                 if selected_time.hour == now.hour and selected_time.day == now.day:
-                    is_now_cheapest = True
-                    future_charge_hours = [t for t in selected_charge_hours if t >= current_hour]
-                    hours_left = max(1, len(future_charge_hours))
-                    ideal_charge_w = ((missing_kwh_for_night / hours_left) * 1000.0) + 200
-                    smart_night_charge_w = int(max(1000, min(MAX_CHARGE_W, ideal_charge_w)))
+                    if not ev_shield_triggered and battery_soc < (night_target_soc - 0.5):
+                        is_now_cheapest = True
                     break
 
         # =====================================================================
-        # DYNAMISK DAGS- OG TARIF-BUSTER OPTIMERING (24-TIMERS RULLENDE)
+        # DYNAMISK DAGS- OG TARIF-BUSTER OPTIMERING (MÅL-SOC & BMS-POWER)
         # =====================================================================
-        smart_afternoon_charge_w = 0
         is_now_cheapest_afternoon = False
         selected_afternoon_hours = []
+        target_soc_afternoon = 0.0
+
+        target_date = now.date() if now.hour < 17 else (now + timedelta(days=1)).date()
+        aften_start = datetime.combine(target_date, datetime.min.time()).replace(hour=17)
+        aften_slut = datetime.combine(target_date, datetime.min.time()).replace(hour=21)
 
         day_candidates = []
         for i in range(25):
             chk_time = current_hour + timedelta(hours=i)
             chk_key = chk_time.strftime("%Y-%m-%d %H")
-            if 10 <= chk_time.hour <= 16 and chk_key in buy_dict:
+            if chk_time.date() == target_date and 10 <= chk_time.hour <= 16 and chk_key in buy_dict:
                 day_candidates.append({
                     'time': chk_time,
                     'key': chk_key,
@@ -1293,10 +1304,6 @@ while True:
         if day_candidates:
             cheapest_day_item = min(day_candidates, key=lambda x: x['price'])
             cheapest_day_price = cheapest_day_item['price']
-            cheapest_day_time = cheapest_day_item['time']
-
-            aften_start = cheapest_day_time.replace(hour=17, minute=0, second=0, microsecond=0)
-            aften_slut = cheapest_day_time.replace(hour=21, minute=0, second=0, microsecond=0)
 
             evening_prices = [v for k, v in buy_dict.items() if aften_start <= datetime.strptime(k, "%Y-%m-%d %H") < aften_slut]
             max_evening_price = max(evening_prices) if evening_prices else price_now_inc
@@ -1312,44 +1319,44 @@ while True:
                     sol_w = solar_dict.get(f_key, 0.0) * 1000.0
                     load_w = ml_predictions_w.get(f_key, 0.0)
 
-                    if f_time.hour >= 6 and f_time.date() > cheapest_day_time.date():
+                    if f_time.hour >= 6 and f_time.date() > aften_start.date():
                         if sol_w >= load_w and sol_w > 300.0:
                             break
 
                     need_w += max(0.0, load_w - sol_w)
 
                 total_need_from_17_kwh = need_w / 1000.0
-
-                hours_to_17 = max(0, int((aften_start - now).total_seconds() / 3600))
-                pre_17_sol_kwh = 0.0
-                pre_17_load_kwh = 0.0
-                for step in range(hours_to_17):
-                    t_step = now + timedelta(hours=step)
-                    k_step = t_step.strftime("%Y-%m-%d %H")
-                    pre_17_sol_kwh += solar_dict.get(k_step, 0.0)
-                    pre_17_load_kwh += (ml_predictions_w.get(k_step, 0.0) / 1000.0)
-
-                est_kwh_at_17 = min(BATTERY_CAPACITY_KWH, max(0.0, (battery_soc / 100.0) * BATTERY_CAPACITY_KWH + pre_17_sol_kwh - pre_17_load_kwh))
                 min_reserve_kwh = (min_soc_val / 100.0) * BATTERY_CAPACITY_KWH
-
                 target_kwh_at_17 = min(BATTERY_CAPACITY_KWH, total_need_from_17_kwh + min_reserve_kwh)
 
                 if (max_evening_price - cheapest_day_price) >= 1.20:
                     target_kwh_at_17 = max(target_kwh_at_17, BATTERY_CAPACITY_KWH * 0.90)
 
-                missing_for_afternoon_kwh = max(0.0, target_kwh_at_17 - est_kwh_at_17)
+                target_soc_afternoon = min(100.0, round((target_kwh_at_17 / BATTERY_CAPACITY_KWH) * 100.0, 1))
+                missing_for_afternoon_kwh = max(0.0, target_kwh_at_17 - ((battery_soc / 100.0) * BATTERY_CAPACITY_KWH))
 
-                if missing_for_afternoon_kwh > 0.5:
+                if missing_for_afternoon_kwh > 0.5 and battery_soc < (target_soc_afternoon - 0.5):
                     sorted_day = sorted(day_candidates, key=lambda x: x['price'])
-                    hours_needed_afternoon = max(1, math.ceil(missing_for_afternoon_kwh / 5.0))
-                    hours_needed_afternoon = min(hours_needed_afternoon, len(sorted_day))
-                    selected_afternoon_hours = [bt['time'] for bt in sorted_day[:hours_needed_afternoon]]
+                    accumulated_kwh = 0.0
+                    selected_afternoon_hours = []
 
-                    smart_afternoon_charge_w = int(max(2000, min(MAX_CHARGE_W, ((missing_for_afternoon_kwh / hours_needed_afternoon) * 1000.0) + 300)))
+                    for cand in sorted_day:
+                        # Hvis timen er den igangværende time, er der kun (60 - minutter) tilbage at lade i
+                        if cand['time'].date() == now.date() and cand['time'].hour == now.hour:
+                            mins_left = max(1, 60 - now.minute)
+                            cand_cap = (MAX_CHARGE_W / 1000.0) * (mins_left / 60.0)
+                        else:
+                            cand_cap = MAX_CHARGE_W / 1000.0
+
+                        selected_afternoon_hours.append(cand['time'])
+                        accumulated_kwh += cand_cap
+                        if accumulated_kwh >= missing_for_afternoon_kwh:
+                            break
 
                     for bt in selected_afternoon_hours:
                         if bt.hour == now.hour and bt.day == now.day:
-                            is_now_cheapest_afternoon = True
+                            if not ev_shield_triggered:
+                                is_now_cheapest_afternoon = True
                             break
 
         smart_solar_charge_w = MAX_CHARGE_W
@@ -1374,20 +1381,6 @@ while True:
 
         solar_forecast_now = solar_dict.get(now.strftime("%Y-%m-%d %H"), 0.0) * 1000.0
         is_daytime = solar_forecast_now > 100.0 or (6 <= now.hour <= 18)
-
-        # --- EV SHIELD LOGIC ---
-        ev_shield_triggered = False
-        ev_dynamic_discharge = MAX_DISCHARGE_W
-
-        if not is_ev_solar_charging:
-            if ev_shield_mode == "Simpel (Total Forbrugsgrænse)" and total_house_w > ev_shield_threshold:
-                ev_shield_triggered = True
-                ev_dynamic_discharge = 0
-                ev_msg = get_msg("ev_shield_simple", threshold=int(ev_shield_threshold))
-            elif ev_shield_mode == "Avanceret (Målt på lader)" and ev_total_w > 500:
-                ev_shield_triggered = True
-                ev_dynamic_discharge = int(min(MAX_DISCHARGE_W, naked_house_w + 200))
-                ev_msg = get_msg("ev_shield_advanced", w=ev_dynamic_discharge)
 
         # --- PRE-CALCULATION OF PEAKS & VOLUME FOR DEBUG ---
         available_sell_kwh_evening = max(0.0, (BATTERY_CAPACITY_KWH * (battery_soc / 100.0)) - (BATTERY_CAPACITY_KWH * (green_target_soc / 100.0)))
@@ -1435,70 +1428,71 @@ while True:
         # --- AI STRATEGY SELECTION (PRIORITY RANKING) ---
         if is_tvangsladning_now:
             handling = get_msg("tvangsladning", pris=price_now_inc)
-            target_mode = "Time of use"
+            target_mode = "Time of use mode"
             target_charge = MAX_CHARGE_W
             action_id = 10
 
         elif is_pre_dump_now:
             handling = get_msg("pre_dump", tid=first_neg_time.strftime("%H:00"))
-            target_mode = "Custom"
+            target_mode = "Custom mode"
             target_discharge = MAX_DISCHARGE_W
+            target_charge = 0
             action_id = 11
 
         elif ev_shield_triggered:
             handling = ev_msg
-            target_mode = "Custom"
+            target_mode = "Custom mode"
             target_discharge = ev_dynamic_discharge
-            target_charge = MAX_CHARGE_W
+            target_charge = 0
             action_id = 9
 
         elif valgt_profil == "Backup Mode":
             if price_now_ex < min_export_price and ((pv_w - p1_w - batt_w) > 100 or (is_currently_export_stopped and pv_w > 50)):
                 handling = get_msg("export_stop")
                 action_id = 2
-                target_mode = "Self-consumption"
+                target_mode = "Self-consumption mode"
                 if battery_soc < 50:
-                    target_mode = "Custom"
+                    target_mode = "Custom mode"
                     target_charge = MAX_CHARGE_W
             else:
                 handling = get_msg("backup_mode")
                 action_id = 6
                 if battery_soc < 50:
-                    target_mode = "Custom"
+                    target_mode = "Custom mode"
                     target_charge = MAX_CHARGE_W
 
         elif valgt_profil == "Smart Selvforsyning":
             if price_now_ex < min_export_price and ((pv_w - p1_w - batt_w) > 100 or (is_currently_export_stopped and pv_w > 50)):
                 handling = get_msg("export_stop_limit", limit=min_export_price)
                 action_id = 2
-                target_mode = "Self-consumption"
+                target_mode = "Self-consumption mode"
                 if battery_soc < 90:
                     target_charge = MAX_CHARGE_W
 
             elif 6 <= now.hour <= 11 and price_now_ex >= total_sell_barrier and price_now_ex >= green_min_sell_price and sol_faktor >= bruger_sol_faktor and (battery_soc >= (min_soc_val + 5.0) or (is_currently_selling and battery_soc >= min_soc_val)):
                 if price_now_ex >= (morning_threshold * 0.98):
                     handling = get_msg("smart_sell_morning", soc=int(min_soc_val))
-                    target_mode = "Custom"
+                    target_mode = "Custom mode"
                     target_discharge = MAX_DISCHARGE_W
                     action_id = 4
 
             elif price_now_ex >= total_sell_barrier and price_now_ex >= green_min_sell_price and (battery_soc >= (green_target_soc + salgs_buffer) or (is_currently_selling and battery_soc >= green_target_soc)):
                 if price_now_ex >= (evening_threshold * 0.98) and max_evening_peak >= max_morning_peak:
                     handling = get_msg("smart_sell_evening", soc=int(green_target_soc))
-                    target_mode = "Custom"
+                    target_mode = "Custom mode"
                     target_discharge = MAX_DISCHARGE_W
                     action_id = 4
 
             elif is_now_cheapest and (now.hour < 6 or now.hour >= 23):
-                handling = get_msg("smart_charge_night", w=smart_night_charge_w)
-                target_mode = "Time of use"
-                target_charge = smart_night_charge_w
+                handling = get_msg("smart_charge_night", soc=int(night_target_soc))
+                target_mode = "Time of use mode"
+                target_charge = MAX_CHARGE_W
                 action_id = 5
 
             elif is_now_cheapest_afternoon and 6 <= now.hour < 17:
-                handling = get_msg("tarif_buster", w=smart_afternoon_charge_w)
-                target_mode = "Time of use"
-                target_charge = smart_afternoon_charge_w
+                handling = get_msg("tarif_buster", soc=int(target_soc_afternoon))
+                target_mode = "Time of use mode"
+                target_charge = MAX_CHARGE_W
                 action_id = 8
 
             elif is_daytime and battery_soc < 98.0:
@@ -1529,14 +1523,14 @@ while True:
 
                 if should_throttle:
                     if naked_house_w > pv_w:
-                        handling = "🌤️ Sol-Throttling Pauset: Forbrug overstiger sol. Skifter til Self-consumption."
-                        target_mode = "Self-consumption"
+                        handling = "🌤️ Sol-Throttling Pauset: Forbrug overstiger sol. Skifter til Self-consumption mode."
+                        target_mode = "Self-consumption mode"
                         target_charge = 10000
                         target_discharge = MAX_DISCHARGE_W
                         action_id = 1
                     elif is_throttle_paused_soc:
                         handling = f"🌤️ Sol-Throttling Pauset: Batteri under grænse ({battery_soc:.1f}%). Lader op til {throttle_hysteresis_target:.1f}%..."
-                        target_mode = "Self-consumption"
+                        target_mode = "Self-consumption mode"
                         target_charge = 10000
                         target_discharge = MAX_DISCHARGE_W
                         action_id = 1
@@ -1548,7 +1542,7 @@ while True:
                             handling = f"🌤️ Intelligent Sol-Throttle: Sælger nu ({price_now_ex:.2f} kr). Venter på {cheapest_sell_later:.2f} kr. Solprognose: +{expected_surplus_later_kwh:.1f} kWh."
                             target_charge = 0
 
-                        target_mode = "Custom"
+                        target_mode = "Custom mode"
                         target_discharge = int(naked_house_w + 300)
                         action_id = 3
                 else:
@@ -1565,23 +1559,23 @@ while True:
             if price_now_ex < min_export_price and ((pv_w - p1_w - batt_w) > 100 or (is_currently_export_stopped and pv_w > 50)):
                 handling = get_msg("export_stop")
                 action_id = 2
-                target_mode = "Self-consumption"
+                target_mode = "Self-consumption mode"
             elif price_now_ex >= (red_profit_margin + total_sell_barrier) and (battery_soc >= (min_soc_val + 5.0) or (is_currently_selling and battery_soc >= min_soc_val)):
                 future_profit_prices = [v for k, v in sell_dict.items() if now.strftime("%Y-%m-%d") in k and int(k.split()[-1]) >= now.hour]
                 max_profit_price = max(future_profit_prices) if future_profit_prices else price_now_ex
 
                 if price_now_ex >= (max_profit_price * 0.95):
                     handling = get_msg("profit_arbitrage", soc=int(min_soc_val))
-                    target_mode = "Custom"
+                    target_mode = "Custom mode"
                     target_discharge = MAX_DISCHARGE_W
                     action_id = 4
             elif is_now_cheapest:
                 handling = get_msg("profit_charge")
-                target_mode = "Time of use"
-                target_charge = smart_night_charge_w
+                target_mode = "Time of use mode"
+                target_charge = MAX_CHARGE_W
                 action_id = 5
             else:
-                target_mode = "Self-consumption"
+                target_mode = "Self-consumption mode"
                 action_id = 1
 
         # =====================================================================
@@ -1604,8 +1598,17 @@ while True:
                 profit_data["total"] += tjent_lige_nu
                 save_ai_profit(profit_data)
 
-        # --- SIMULATION (CRYSTAL BALL) ---
+        # --- SIMULATION (CRYSTAL BALL - POWERED BY BATTERY EXPERIENCE) ---
         sim_soc = battery_soc
+        # Hvis vi aktivt lader fra nettet lige nu, medregnes resten af den aktuelle time i simulationens start
+        if is_now_cheapest_afternoon or is_now_cheapest or is_tvangsladning_now:
+            mins_left_cur = max(0, 60 - now.minute)
+            cur_pwr = find_charge_experience(battery_experience_now, current_temp, sim_soc)
+            kwh_in_rest_hour = (cur_pwr / 1000.0) * (mins_left_cur / 60.0)
+            max_target = target_soc_afternoon if is_now_cheapest_afternoon else (night_target_soc if is_now_cheapest else 100.0)
+            sim_soc = min(max_target, sim_soc + (kwh_in_rest_hour / BATTERY_CAPACITY_KWH) * 100.0)
+
+        sim_start_soc = sim_soc
         sim_soc_list = []
         sim_time_list = []
         sim_throttle_paused_soc = False
@@ -1615,8 +1618,6 @@ while True:
         sim_net_list = []
         sim_solar_list = []
         sim_real_solar_list = []
-
-        max_soc_drop_per_hour = ((MAX_DISCHARGE_W / 1000.0) / BATTERY_CAPACITY_KWH) * 100.0
 
         for i in range(1, 25):
             future = now + timedelta(hours=i)
@@ -1651,7 +1652,7 @@ while True:
             if 6 <= future.hour < 17:
                 for bt in selected_afternoon_hours:
                     if bt.hour == future.hour and bt.day == future.day:
-                        if sim_soc < 99.0:
+                        if sim_soc < (target_soc_afternoon - 0.5):
                             is_charge_hour = True
                             is_afternoon_charge = True
                             sim_charge_hours.append(key)
@@ -1660,7 +1661,7 @@ while True:
             if not is_charge_hour and (future.hour < 6 or future.hour >= 23):
                 for bt in selected_charge_hours:
                     if bt.hour == future.hour and bt.day == future.day:
-                        if sim_soc < night_target_soc:
+                        if sim_soc < (night_target_soc - 0.5):
                             is_charge_hour = True
                             sim_charge_hours.append(key)
                         break
@@ -1689,18 +1690,13 @@ while True:
                 sim_arbitrage_hours.append(key)
 
             if is_charge_hour:
-                if is_afternoon_charge:
-                    charge_kwh = smart_afternoon_charge_w / 1000.0
-                    actual_max_kwh = sim_max_charge_w / 1000.0
-                    room_kwh = ((100.0 - sim_soc) / 100.0) * BATTERY_CAPACITY_KWH
-                    charge_kwh = min(charge_kwh, actual_max_kwh, room_kwh)
-                    sim_soc += ((charge_kwh + net_kwh) / BATTERY_CAPACITY_KWH) * 100.0
-                else:
-                    missing_soc = max(0, night_target_soc - sim_soc)
-                    missing_kwh = (missing_soc / 100.0) * BATTERY_CAPACITY_KWH
-                    actual_max_kwh = sim_max_charge_w / 1000.0
-                    charge_kwh = min(missing_kwh, actual_max_kwh)
-                    sim_soc += ((charge_kwh + net_kwh) / BATTERY_CAPACITY_KWH) * 100.0
+                sim_target_soc = target_soc_afternoon if is_afternoon_charge else night_target_soc
+                missing_soc = max(0.0, sim_target_soc - sim_soc)
+                missing_kwh = (missing_soc / 100.0) * BATTERY_CAPACITY_KWH
+                actual_max_kwh = sim_max_charge_w / 1000.0
+                charge_kwh = min(missing_kwh, actual_max_kwh)
+                sim_soc += ((charge_kwh + net_kwh) / BATTERY_CAPACITY_KWH) * 100.0
+                sim_soc = min(sim_target_soc, sim_soc)
 
             elif is_arbitrage_hour:
                 if valgt_profil == "Profit Mode" or (valgt_profil == "Smart Selvforsyning" and 6 <= future.hour <= 11):
@@ -1823,7 +1819,7 @@ while True:
             "state": handling,
             "attributes": {
                 "friendly_name": "Intelligent Solcellestyring (ML)",
-                "version": "1.1.2",
+                "version": "1.1.3",
                 "icon": "mdi:solar-power" if valgt_profil == "Smart Selvforsyning" else ("mdi:cash" if valgt_profil == "Profit Mode" else "mdi:shield-home"),
                 "sidst_opdateret": now.strftime("%Y-%m-%d %H:%M:%S"),
                 "target_work_mode": target_mode,
@@ -1864,7 +1860,7 @@ while True:
             t_solar_w = int(solar_dict.get(key, 0.0) * 1000)
             t_net_w = int(time_net * 1000)
 
-            prev_soc = sim_soc_list[i-2] if i > 1 else battery_soc
+            prev_soc = sim_soc_list[i-2] if i > 1 else sim_start_soc
 
             if is_arbitrage_hour_future:
                 hus_brug_pct = (abs(time_net) / BATTERY_CAPACITY_KWH) * 100.0 if time_net < 0 else 0.0
@@ -1881,9 +1877,9 @@ while True:
             if is_charge_hour_future:
                 is_aft_plan = key in [bt.strftime("%Y-%m-%d %H") for bt in selected_afternoon_hours]
                 if is_aft_plan:
-                    plan_text = f"{soc_text}{dbg_txt(8)} " + get_msg("tarif_buster", w=smart_afternoon_charge_w)
+                    plan_text = f"{soc_text}{dbg_txt(8)} " + get_msg("tarif_buster", soc=int(target_soc_afternoon))
                 else:
-                    plan_text = f"{soc_text}{dbg_txt(5)} " + get_msg("plan_charge")
+                    plan_text = f"{soc_text}{dbg_txt(5)} " + get_msg("smart_charge_night", soc=int(night_target_soc))
             elif is_arbitrage_hour_future:
                 end_soc = int(time_soc)
                 if valgt_profil == "Profit Mode":
@@ -1928,7 +1924,7 @@ while True:
                 else:
                     plan_text = f"{soc_text}{dbg_txt(1)} " + get_msg("plan_sun_charge")
             else:
-                prev_soc = sim_soc_list[i-2] if i > 1 else battery_soc
+                prev_soc = sim_soc_list[i-2] if i > 1 else sim_start_soc
                 if time_soc <= (min_soc_val + 0.2) and (prev_soc - time_soc) < 0.1:
                     plan_text = f"{soc_text}{dbg_txt(1)} " + get_msg("plan_grid_cover", w=abs(t_net_w))
                 else:
@@ -1961,7 +1957,7 @@ while True:
                     plan_clean = plan_str.split(" [ID:")[0].strip() if " [ID:" in plan_str else plan_str.strip()
 
                 plan_tag = f" [Plan: {plan_clean}]" if plan_clean != "-" else ""
-                
+
                 payload["attributes"][f"historik_{h}h"] = (
                     f"**[{h_time.strftime('%d/%m %H:00')} | K:{he['pris_koeb_inkl_moms']:.2f} S:{he['pris_salg_ex_moms']:.2f}]** "
                     f"🔋 {int(he['batteri_soc'])}% [ID: {he['action_id']} | ☀️ {he['sol_w']}W] ⏪ {he['beslutning_tekst']}{plan_tag}"
@@ -1985,7 +1981,7 @@ while True:
         # =====================================================================
         # LEARNING WATCHDOG: LIVE FEEDBACK FROM BATTERY BMS
         # =====================================================================
-        if target_mode == "Time of use" and target_charge >= (MAX_CHARGE_W - 500):
+        if target_mode == "Time of use mode" and target_charge >= (MAX_CHARGE_W - 500):
             actual_charge_w = abs(batt_w)
             if actual_charge_w > 200:
                 experience = get_battery_experience(NOMINAL_CAPACITY)
