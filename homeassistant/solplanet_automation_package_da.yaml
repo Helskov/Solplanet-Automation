@@ -1,5 +1,5 @@
 # ==============================================================================
-# SOLPLANET AUTOMATION - KOMPLET HOME ASSISTANT PAKKE (DANSK)
+# SOLPLANET AUTOMATION - KOMPLET HOME ASSISTANT PAKKE (DANSK) V1.1.3
 # ==============================================================================
 # VIGTIGT KRAV TIL INTEGRATION:
 # Denne pakke kræver den uofficielle "Solplanet / VoltX Inverter Integration"
@@ -403,6 +403,7 @@ automation:
 script:
   solcelle_beregn_kommende_time:
     alias: "SA: Udfør AI Strategi"
+    mode: restart
     sequence:
       - condition: state
         entity_id: input_boolean.solcelle_ai_styring_aktiv
@@ -439,6 +440,7 @@ script:
               - action: script.solcelle_saet_skema_med_tjek
                 data:
                   skema_mode: "discharge"
+
           - conditions:
               - condition: template
                 value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 3 }}"
@@ -446,25 +448,17 @@ script:
               - action: script.solcelle_saet_skema_med_tjek
                 data:
                   skema_mode: "charge"
+
           - conditions:
               - condition: template
                 value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') | int(0) in [5, 8, 10] }}"
             sequence:
-              - variables:
-                  batteri_str_kwh: "{{ states('input_number.batteri_kapacitet_kwh') | float(20.0) }}"
-                  soc_sensor: "DIN_BATTERI_SOC_SENSOR"
-                  onsket_kwh: "{{ state_attr('sensor.solplanet_automation_plan', 'target_battery_input_power') | float(0) / 1000 }}"
-                  start_soc: "{{ states(soc_sensor) | float(0) }}"
-                  target_soc: "{{ start_soc + (onsket_kwh / batteri_str_kwh * 100) }}"
               - action: select.select_option
                 target:
-                  entity_id: DIN_INVERTER_WORK_MODE_ENTITET
+                  entity_id: select.solplanet_battery_oe012k60z2550185_work_mode
                 data:
                   option: "Time of use mode"
-              - wait_template: "{{ states(soc_sensor) | float(0) >= target_soc }}"
-                timeout: "00:55:00"
-                continue_on_timeout: true
-              - action: script.solcelle_nulstil_til_normal_drift
+
           - conditions:
               - condition: state
                 entity_id: input_boolean.override_eksport_stop
@@ -480,13 +474,14 @@ script:
               - choose:
                   - conditions:
                       - condition: template
-                        value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'target_work_mode') == 'Custom' }}"
+                        value_template: "{{ 'Custom' in state_attr('sensor.solplanet_automation_plan', 'target_work_mode') | string }}"
                     sequence:
                       - action: script.solcelle_saet_skema_med_tjek
                         data:
                           skema_mode: "charge"
                 default:
                   - action: script.solcelle_nulstil_til_normal_drift
+
           - conditions:
               - condition: template
                 value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 6 }}"
@@ -494,6 +489,7 @@ script:
               - action: script.solcelle_saet_skema_med_tjek
                 data:
                   skema_mode: "charge"
+
           - conditions:
               - condition: template
                 value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 7 }}"
@@ -501,7 +497,7 @@ script:
               - action: script.solcelle_saet_skema_med_tjek
                 data:
                   skema_mode: "charge"
-          # --- TILFØJ DENNE NYE BLOK TIL ELBIL SKJOLD (ID 9) ---
+
           - conditions:
               - condition: template
                 value_template: "{{ state_attr('sensor.solplanet_automation_plan', 'action_id') == 9 }}"
@@ -509,7 +505,7 @@ script:
               - action: script.solcelle_saet_skema_med_tjek
                 data:
                   skema_mode: "discharge"
-          # ---------------------------------------------------
+
         default:
           - action: script.solcelle_haandter_eksport
             data:
