@@ -1,4 +1,4 @@
-# Solplanet Automation 1.1 ☀️🔋
+# Solplanet Automation 1.1.3 ☀️🔋
 
 Solplanet Automation energy management system for Home Assistant. It uses **Machine Learning** to predict your household consumption and real-time spot prices to optimize battery usage. 
 
@@ -178,6 +178,43 @@ For the advanced 24-hour visualization, use the code in `forecast_card.yaml` in 
   - **Export Spot Isolation:** Preserved strict separation ensuring export/selling decisions rely exclusively on verified, official spot prices (excl. VAT/tariffs) without forecast speculation.
   - **Cleaned Status Messaging:** Standardized planning status descriptions, replacing legacy "Tarif-Buster" labels with clean charging indicators.
   - **Fixed redundant night charging by factoring in expected daytime solar surplus before evaluating the upcoming night's energy deficit.
+* 1.1.3 - Solplanet AI Controller
+
+* New Features & Enhancements
+
+* **Time of Use & Full BMS Power**[cite: 1]:
+  * Removed artificial wattage throttling in `Time of use mode`, aligning with the binary hardware control behavior of Solplanet inverters[cite: 1].
+  * Script now requests full hardware capacity (`MAX_CHARGE_W`), allowing the battery BMS to govern actual charge throughput[cite: 1].
+  * Re-enabled the BMS learning watchdog to automatically update `battery_experience.json` across temperatures for both 0–90% and 90–100% SOC (high-SOC tapering)[cite: 1].
+
+* **Intelligent SOC-Cutoff (Active Cutoff)**[cite: 1]:
+  * Both Tariff-Buster (`target_soc_afternoon`) and Smart Night Charging (`night_target_soc`) dynamically terminate grid charging once target SOC is met[cite: 1].
+  * Automatically returns the inverter to `Self-consumption mode` to avoid drawing unnecessary power from the grid[cite: 1].
+
+* **BMS-Aware Crystal Ball Simulation**[cite: 1]:
+  * Simulation engine now pulls charging rates directly from `battery_experience.json` via `find_charge_experience()`[cite: 1].
+  * Projects battery state using real charge power and accurately accounts for charge throttling between 90% and 100% SOC[cite: 1].
+
+
+## 🛠 Bug Fixes & Stability
+
+* **Tariff-Buster Horizon & Minute Correction**[cite: 1]:
+  * Fixed an issue where the rolling 24-hour candidate scanner combined afternoon hours from different days[cite: 1]. Evening peaks are now secured exclusively using remaining hours prior to 17:00 on the active day[cite: 1].
+  * Added active-hour minute correction: starting a charge late in an hour calculates remaining minutes rather than a full 60-minute window, automatically queueing subsequent hours if needed to reach the target SOC[cite: 1].
+
+* **EV Shield & Work Modes**[cite: 1]:
+  * Standardized inverter work modes across all routines to `"Custom mode"` and `"Self-consumption mode"` for 1:1 Home Assistant compatibility[cite: 1].
+  * Forced `target_charge = 0` during EV Shield and Pre-dump in `Custom mode` to prevent conflicting inverter commands[cite: 1].
+  * Moved `ev_shield_triggered` initialization earlier in the main loop to eliminate startup `NameError` crashes[cite: 1].
+  * EV Shield now strictly overrides and suppresses scheduled Tariff-Buster net charging while an EV charges from the grid[cite: 1].
+
+* **Display SOC Synchronization**[cite: 1]:
+  * Fixed an issue where the first projected hour displayed outdated sensor SOC rather than the expected post-charge state[cite: 1].
+  * Simulation now accounts for active intra-hour charging via `sim_start_soc`, ensuring the display icon (`🔋`) and projected SOC match reality[cite: 1].
+
+---
+
+
 ## 🛠️ Troubleshooting
 
 - **Home Assistant API Errors (`API Error`):**
